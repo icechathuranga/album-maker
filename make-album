@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Build a printable album PDF from a folder of event photos.
+#
+#   ./make-album "Birthday Party"      inbox/Birthday Party -> outbox/Birthday Party.pdf
+#   ./make-album --all                 every folder in inbox/
+#   ./make-album --list                what is waiting in inbox/
+#
+# Uses the bundled vendor/ libraries, so there is nothing to activate.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from photoalbum.cli import main; sys.exit(main())' "$HERE" "$@"

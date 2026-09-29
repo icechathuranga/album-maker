@@ -1,0 +1,12 @@
+# Personal photos and generated albums
+inbox/
+outbox/
+
+# Reference images collected from the web
+refs/
+
+# Third-party libraries - reinstall with the pip command in README.md
+vendor/
+
+__pycache__/
+*.pyc
