@@ -57,6 +57,103 @@ def _register_fonts():
     return regular_name, bold_name
 
 
+def _register_display_fonts():
+    """A light serif for poster titles and a light sans for spaced subtitles.
+
+    Falls back through what is commonly installed, ending on the core PDF
+    fonts, so a missing font changes the look but never fails the album.
+    """
+    def first(name, paths, fallback):
+        for path in paths:
+            if os.path.exists(path):
+                try:
+                    pdfmetrics.registerFont(TTFont(name, path))
+                    return name
+                except Exception:
+                    pass
+        return fallback
+    tt = "/usr/share/fonts/truetype/"
+    serif = first("AlbumSerif", [tt + "fonts-yrsa-rasa/Yrsa-Regular.ttf",
+                                 tt + "liberation2/LiberationSerif-Regular.ttf",
+                                 tt + "liberation/LiberationSerif-Regular.ttf",
+                                 tt + "dejavu/DejaVuSerif.ttf"], "Times-Roman")
+    light = first("AlbumLight", [tt + "ubuntu/Ubuntu-L.ttf",
+                                 tt + "dejavu/DejaVuSans-ExtraLight.ttf",
+                                 tt + "liberation2/LiberationSans-Regular.ttf"],
+                  "Helvetica")
+    return serif, light
+
+
+def _spaced_width(c, text, font, size, tracking):
+    return c.stringWidth(text, font, size) + tracking * max(0, len(text) - 1)
+
+
+def _draw_spaced(c, cx, y, text, font, size, tracking, color, shadow=0.0):
+    """Letter-spaced text centred on cx, with an optional faint drop shadow."""
+    x = cx - _spaced_width(c, text, font, size, tracking) / 2.0
+    for dx, dy, col in ([(size * 0.02, -size * 0.03, Color(0, 0, 0, alpha=shadow))]
+                        if shadow else []) + [(0, 0, color)]:
+        t = c.beginText(x + dx, y + dy)
+        t.setFont(font, size)
+        t.setCharSpace(tracking)
+        t.setFillColor(col)
+        t.textOut(text)
+        c.drawText(t)
+
+
+def _draw_display_title(c, page_w, page_h, title, subtitle, text):
+    """Poster lettering: widely spaced capitals, subtitle between two rules.
+
+    The title fills most of the width; a name too long for one line at a
+    readable size breaks onto two at the word nearest the middle.
+    """
+    serif, light = _register_display_fonts()
+    pw, ph = page_w * MM_TO_PT, page_h * MM_TO_PT
+    cx, yc = pw / 2.0, ph * text["y"]
+    name = covers.display_title(title).upper()
+    track = 0.30                      # letter spacing, as a share of the size
+
+    def fits(lines, size):
+        return all(_spaced_width(c, ln, serif, size, size * track) <= pw * 0.86
+                   for ln in lines)
+
+    lines, size = [name], text.get("size", 58)
+    while size > 30 and not fits(lines, size):
+        size -= 1
+    if not fits(lines, size) and " " in name:
+        words = name.split()
+        cut = min(range(1, len(words)), key=lambda i: abs(
+            len(" ".join(words[:i])) - len(" ".join(words[i:]))))
+        lines, size = [" ".join(words[:cut]), " ".join(words[cut:])], text.get("size", 58)
+        while size > 18 and not fits(lines, size):
+            size -= 1
+    else:
+        while size > 18 and not fits(lines, size):
+            size -= 1
+
+    fg = Color(*text["fg"])
+    lead = size * 1.12
+    top = yc + (len(lines) - 1) * lead / 2.0
+    for i, ln in enumerate(lines):
+        _draw_spaced(c, cx, top - i * lead - size * 0.34, ln, serif, size,
+                     size * track, fg, shadow=0.30)
+
+    if subtitle:
+        sub = subtitle.upper()
+        ss = max(11.0, size * 0.24)
+        st = ss * 0.32
+        sy = top - (len(lines) - 1) * lead - size * 0.34 - size * 0.42 - ss
+        _draw_spaced(c, cx, sy, sub, light, ss, st, Color(*text["sub"]), shadow=0.30)
+        half = _spaced_width(c, sub, light, ss, st) / 2.0
+        gap, margin = ss * 1.1, pw * 0.07
+        c.setStrokeColor(Color(*text["rule"]))
+        c.setLineWidth(0.6)
+        ry = sy + ss * 0.33
+        if cx - half - gap > margin + 10:
+            c.line(margin, ry, cx - half - gap, ry)
+            c.line(cx + half + gap, ry, pw - margin, ry)
+
+
 def cover_crop(img, target_w_px, target_h_px, focus=None):
     """Scale to fill the slot and crop the overflow, keeping the subject.
 
@@ -231,11 +328,21 @@ def _draw_cover(c, page_w, page_h, title, subtitle, detail, fonts,
                 bg=(0.09, 0.10, 0.12), image_path=None, text=None, label=None):
     regular, bold = fonts
     if image_path:
-        c.drawImage(image_path, 0, 0, width=page_w * MM_TO_PT,
-                    height=page_h * MM_TO_PT, preserveAspectRatio=False)
+        # Drawn a little past every edge. Placed exactly on the page, viewers
+        # anti-alias the boundary into a white hairline, and a print shop's
+        # trim can drift by a millimetre and show paper.
+        over = 1.5 * MM_TO_PT
+        c.drawImage(image_path, -over, -over, width=page_w * MM_TO_PT + 2 * over,
+                    height=page_h * MM_TO_PT + 2 * over, preserveAspectRatio=False)
     else:
         c.setFillColor(Color(*bg))
         c.rect(0, 0, page_w * MM_TO_PT, page_h * MM_TO_PT, stroke=0, fill=1)
+
+    if text and text.get("display"):
+        _draw_display_title(c, page_w, page_h, title, subtitle, text)
+        _draw_label(c, page_h, label, bold)
+        c.showPage()
+        return
 
     # With no picture the title sits near the optical centre of a dark page.
     text = text or dict(covers.LIGHT_TEXT, y=0.56, size=34,
@@ -273,15 +380,20 @@ def _draw_cover(c, page_w, page_h, title, subtitle, detail, fonts,
         c.setFillColor(Color(*text["detail"]))
         c.drawCentredString(cx, title_y - size * 0.62 - 20, detail)
 
-    if label:
-        # A tag in the corner of a preview page, naming the style to ask for.
-        c.setFillColor(Color(0, 0, 0, alpha=0.6))
-        c.roundRect(10, page_h * MM_TO_PT - 32, c.stringWidth(label, bold, 11) + 16,
-                    22, 4, stroke=0, fill=1)
-        c.setFillColor(white)
-        c.setFont(bold, 11)
-        c.drawString(18, page_h * MM_TO_PT - 25, label)
+    _draw_label(c, page_h, label, bold)
     c.showPage()
+
+
+def _draw_label(c, page_h, label, bold):
+    """A tag in the corner of a preview page, naming the style to ask for."""
+    if not label:
+        return
+    c.setFillColor(Color(0, 0, 0, alpha=0.6))
+    c.roundRect(10, page_h * MM_TO_PT - 32, c.stringWidth(label, bold, 11) + 16,
+                22, 4, stroke=0, fill=1)
+    c.setFillColor(white)
+    c.setFont(bold, 11)
+    c.drawString(18, page_h * MM_TO_PT - 25, label)
 
 
 def render(pages, out_path, page_w, page_h, title="Album", subtitle="", detail="",

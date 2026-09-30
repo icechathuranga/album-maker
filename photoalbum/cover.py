@@ -54,10 +54,80 @@ def _quality(p):
     return value
 
 
+def _posed_pair(p):
+    """Two people of similar size side by side, facing the camera.
+
+    The tool cannot tell a bride from a guest, but a couple posing together
+    has a shape it can measure: exactly two faces, neither much smaller than
+    the other, close together, eyes open where they could be judged.
+    """
+    m = p.scores or {}
+    boxes = list(p.face_boxes or [])
+    if len(boxes) != 2:
+        return False
+    (x1, y1, w1, h1, _), (x2, y2, w2, h2, _) = sorted(boxes, key=lambda b: b[0])
+    if min(w1 * h1, w2 * h2) < 0.5 * max(w1 * h1, w2 * h2):
+        return False
+    if x2 - (x1 + w1) > 1.5 * max(w1, w2):
+        return False
+    return not (m.get("eyes_judged", 0) and m.get("eye_ratio", 1.0) < 0.5)
+
+
+def _striking(p):
+    """How much a photo catches the eye on a cover: colour, drama, moment.
+
+    A cover sells the whole album in one glance, so it wants the photos that
+    are memorable, not merely well made: strong colour, tonal range, the
+    frames already judged good enough for a page of their own. A grey or
+    washed-out frame is marked down hard however sharp it is.
+    """
+    m = p.scores or {}
+    colour = m.get("colorfulness", 0.0)
+    v = 24.0 * colour + 8.0 * m.get("interest", 0.0) + 6.0 * m.get("detail", 0.0)
+    # People are what an event is remembered by: a couple, a family, a face.
+    v += 22.0 * m.get("faces_score", 0.0)
+    if p.hero:
+        v += 12.0                 # already picked as one of the album's best
+    if _posed_pair(p):
+        v += 20.0                 # most likely the two people the day is about
+    if colour < 0.35:
+        v -= 25.0 * (0.35 - colour) / 0.35 + 8.0
+    return v
+
+
 def _shape_loss(p, aspect):
     """Fraction of the photo thrown away to fit a tile of `aspect` (w/h)."""
     a = p.aspect or 1.0
     return 1.0 - min(a, aspect) / max(a, aspect)
+
+
+def _clean_window(p, aspect):
+    """Can a full-height crop of `aspect` hold the main face with nobody cut?
+
+    Every other face must land wholly inside the window or wholly outside it.
+    Candidate windows only need checking with an edge on a face edge.
+    """
+    boxes = list(p.face_boxes or [])
+    a = p.aspect or 1.0
+    keep = aspect / a
+    if not boxes or keep >= 1.0:
+        return True
+    pad = crop.FACE_PAD * 0.5
+    spans = [(x - w * pad, x + w * (1 + pad)) for (x, _y, w, _h, _s) in boxes]
+    main = spans[max(range(len(boxes)), key=lambda i: boxes[i][2] * boxes[i][3])]
+    if main[1] - main[0] > keep:
+        return False
+    starts = {main[0], main[1] - keep}
+    for s0, s1 in spans:
+        starts.update((s0, s1, s0 - keep, s1 - keep))
+    for x0 in starts:
+        x0 = min(max(x0, 0.0), 1.0 - keep)
+        x1 = x0 + keep
+        if main[0] < x0 - 1e-6 or main[1] > x1 + 1e-6:
+            continue
+        if all(s1 <= x0 or s0 >= x1 or (s0 >= x0 and s1 <= x1) for s0, s1 in spans):
+            return True
+    return False
 
 
 def _face_misfit(p, aspect):
@@ -89,8 +159,21 @@ def _same_scene(a, b):
             and dedupe.hamming(a.dhash, b.dhash) <= SCENE_BITS)
 
 
+def need_aspect(p):
+    """The narrowest crop (w/h, full height) that keeps its people whole."""
+    boxes = list(p.face_boxes or [])
+    if not boxes:
+        return 0.0
+    biggest = max(w * h for (_x, _y, w, h, _s) in boxes) or 1e-6
+    boxes = [b for b in boxes if b[2] * b[3] >= 0.3 * biggest]
+    span = max(x + w for (x, _y, w, _h, _s) in boxes) - min(b[0] for b in boxes)
+    span = min(1.0, span * (1.0 + crop.FACE_PAD) + 0.04)
+    return span * (p.aspect or 1.0)
+
+
 def pick_set(pool, n, tile_aspect, first=None, named=(), gap_seconds=240,
-             avoid=()):
+             avoid=(), striking=0.0, stretch=1.0, subject_only=False,
+             named_first=False):
     """Choose `n` photos that work together on one cover.
 
     Taking the top n by score gives five frames of the same moment. So this
@@ -98,8 +181,14 @@ def pick_set(pool, n, tile_aspect, first=None, named=(), gap_seconds=240,
     few minutes with one already chosen, for looking like the same scene,
     and for tipping the set too far towards either people or places. `avoid`
     are photos already elsewhere on the cover: never picked, and marked down
-    against in the same way. Photos named in cover.txt go first, in the order
-    written. Returned in the order they were taken.
+    against in the same way. `striking` (0-1) weights colour and drama over
+    plain quality, for designs that live on impact. `stretch` is how much
+    wider than `tile_aspect` a tile may grow for a photo of several people.
+    With `subject_only`, a group photo is fine as long as its main face can
+    be shown whole without cutting anyone (see _clean_window). With
+    `named_first`, photos named in cover.txt lead in the order written and
+    only the automatic picks are put in time order after them. Photos named in cover.txt
+    go first, in the order written. Returned in the order they were taken.
     """
     chosen = []
     by_name = {p.name.lower(): p for p in pool}
@@ -113,12 +202,22 @@ def pick_set(pool, n, tile_aspect, first=None, named=(), gap_seconds=240,
 
     avoid = list(avoid)
     rest = [p for p in pool if p not in chosen and p not in avoid]
+    # The chapters with the most photos are the day's main moments - the
+    # ceremony, the drive, the dinner - so photos from them count for more.
+    sizes = {}
+    for p in pool:
+        sizes[p.segment] = sizes.get(p.segment, 0) + 1
+    biggest = float(max(sizes.values())) if sizes else 1.0
     while len(chosen) < n and rest:
         people = sum(1 for c in chosen if (c.scores or {}).get("faces", 0))
 
         def value(p):
             v = _quality(p) - 40.0 * _shape_loss(p, tile_aspect)
-            v -= 80.0 * _face_misfit(p, tile_aspect)
+            v += striking * (_striking(p) + 14.0 * (sizes[p.segment] / biggest) ** 0.5)
+            if subject_only:
+                v -= 0.0 if _clean_window(p, tile_aspect * stretch) else 80.0
+            else:
+                v -= 80.0 * _face_misfit(p, tile_aspect * stretch)
             for c in chosen + avoid:
                 if _same_scene(p, c):
                     v -= 35.0
@@ -141,6 +240,11 @@ def pick_set(pool, n, tile_aspect, first=None, named=(), gap_seconds=240,
 
     # The pool arrives in the order the photos were taken; keep to it.
     order = {id(p): i for i, p in enumerate(pool)}
+    if named_first:
+        fixed = [p for p in chosen if p.name.lower() in named]
+        auto = sorted((p for p in chosen if p not in fixed),
+                      key=lambda p: order.get(id(p), -1))
+        return fixed + auto
     chosen.sort(key=lambda p: order.get(id(p), -1))
     return chosen
 
@@ -161,7 +265,7 @@ class _Source:
         return self.cache[key]
 
 
-def _fit(src, photo, w, h, look):
+def _fit(src, photo, w, h, look, exclude_penalty=None):
     """The photo cropped to exactly w x h pixels, graded, faces kept whole."""
     img = src.get(photo)
     scale = min(1.0, CROP_ANALYSIS_EDGE / float(max(img.size)))
@@ -169,7 +273,8 @@ def _fit(src, photo, w, h, look):
         (max(8, int(img.width * scale)), max(8, int(img.height * scale))),
         Image.BILINEAR)
     box = crop.find(np.asarray(small.convert("RGB"), dtype=np.uint8),
-                    w / float(h), face_boxes=photo.face_boxes)
+                    w / float(h), face_boxes=photo.face_boxes,
+                    exclude_penalty=exclude_penalty)
     inv = 1.0 / scale
     x, y, cw, ch = (int(v * inv) for v in box)
     cw, ch = max(8, min(cw, img.width)), max(8, min(ch, img.height))
@@ -232,28 +337,87 @@ def _classic(W, H, hero, pool, ctx):
     return img, dict(LIGHT_TEXT, y=0.175, size=34)
 
 
+def _seams(page, xs, width):
+    """Soft dark seams where two strips meet, instead of a gap.
+
+    A light gutter reads as white edges on a dark cover; butting the strips
+    together with a faint shadow along each join separates them the way a
+    printed panorama poster does.
+    """
+    a = np.asarray(page, dtype=np.float32)
+    W = a.shape[1]
+    cols = np.arange(W, dtype=np.float32)
+    shade = np.ones(W, dtype=np.float32)
+    for x in xs:
+        shade *= 1.0 - 0.55 * np.exp(-((cols - x) / width) ** 2)
+    a *= shade[None, :, None]
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+
+
+def _title_band(page, centre, spread=0.13, strength=0.50, edge=0.18):
+    """Darken softly around the title line, and a little towards the edges.
+
+    `centre` is a fraction of the height from the top. The falloff is wide
+    and smooth, so there is no visible band - just enough shade behind thin
+    white lettering for it to read over a bright sky.
+    """
+    a = np.asarray(page, dtype=np.float32)
+    H, W = a.shape[:2]
+    y = np.linspace(0.0, 1.0, H, dtype=np.float32)
+    band = 1.0 - strength * np.exp(-((y - centre) / spread) ** 2)
+    x = np.linspace(-1.0, 1.0, W, dtype=np.float32)
+    vignette = 1.0 - edge * np.clip(np.abs(x) - 0.55, 0.0, 1.0) / 0.45
+    a *= band[:, None, None] * vignette[None, :, None]
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+
+
+STRIP_STRETCH = (0.75, 1.6)   # narrowest and widest strip, x the even width
+
+
+def _strip_widths(photos, W, H):
+    """Share the page width so each strip is as wide as its photo needs.
+
+    Scenery reads at any width and gives some up; a couple or a group needs
+    enough width to keep everyone whole. Clamped so no strip becomes a
+    sliver or a panel, then scaled to fill the page exactly.
+    """
+    base = W / float(len(photos))
+    lo, hi = STRIP_STRETCH
+    want = []
+    for p in photos:
+        need = need_aspect(p) * H * 1.05
+        want.append(float(np.clip(need / base, lo, hi)) if need else 0.9)
+    total = sum(want)
+    widths = [int(round(W * w / total)) for w in want]
+    widths[-1] = W - sum(widths[:-1])
+    return widths
+
+
 def _strips(W, H, hero, pool, ctx):
     n = 5 if W <= H else 6
-    photo_h = int(H * 0.76)
-    gap = max(2, int(W * 0.012))
-    strip_w = (W - gap * (n - 1)) // n
     named = ctx["named"]
-    photos = pick_set(pool, n, strip_w / float(photo_h),
+    photos = pick_set(pool, n, (W / float(n)) / H,
                       first=hero if named else None, named=named,
-                      gap_seconds=ctx["gap"])
+                      gap_seconds=ctx["gap"], striking=1.0,
+                      stretch=STRIP_STRETCH[1], subject_only=True,
+                      named_first=True)
     if len(photos) < n:
         return None
 
-    page = Image.new("RGB", (W, H), CREAM)
-    x = 0
-    for i, p in enumerate(photos):
-        # The last strip takes up the rounding so the right edge is flush.
-        w = W - x if i == n - 1 else strip_w
-        page.paste(_fit(ctx["src"], p, w, photo_h, ctx["look"]), (x, 0))
-        x += w + gap
-    ink = _accent(page.crop((0, 0, W, photo_h)), value=0.20)
-    band_mid = 1.0 - (photo_h + (H - photo_h) * 0.46) / H
-    return page, dict(_dark_text(ink), y=band_mid, size=34)
+    # Full height, edge to edge: no gutter, no band, nothing white.
+    page = Image.new("RGB", (W, H), (12, 12, 14))
+    x, joins = 0, []
+    for p, w in zip(photos, _strip_widths(photos, W, H)):
+        page.paste(_fit(ctx["src"], p, w, H, ctx["look"], exclude_penalty=0.15),
+                   (x, 0))
+        x += w
+        joins.append(x)
+    page = _seams(page, joins[:-1], max(2.0, W * 0.0035))
+
+    centre = 0.40                     # title line, from the top of the page
+    page = _title_band(page, centre)
+    return page, dict(LIGHT_TEXT, y=1.0 - centre, size=58, display=True,
+                      sub=(0.92, 0.92, 0.94), rule=(0.86, 0.86, 0.88))
 
 
 def _justified_rows(photos, rows, W, H, gap):
@@ -370,6 +534,26 @@ def _frame(W, H, hero, pool, ctx):
 
 _BUILDERS = {"classic": _classic, "strips": _strips, "collage": _collage,
              "split": _split, "duotone": _duotone, "frame": _frame}
+
+
+_DATE_WORDS = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
+               "sept", "oct", "nov", "dec", "january", "february", "march",
+               "april", "june", "july", "august", "september", "october",
+               "november", "december"}
+
+
+def display_title(title):
+    """The name without the dates folder names carry for sorting.
+
+    "Thailand Bangkok 2026 March" -> "Thailand Bangkok". The date range is
+    printed under it anyway, and a short name is what a big poster title
+    needs. Only trailing date words go, and never the whole name.
+    """
+    words = title.split()
+    while len(words) > 1 and (words[-1].lower() in _DATE_WORDS
+                              or (words[-1].isdigit() and len(words[-1]) in (1, 2, 4))):
+        words.pop()
+    return " ".join(words)
 
 
 def compose(style, hero, pool, page_w, page_h, dpi, look="vivid", named=(),

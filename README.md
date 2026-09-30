@@ -74,8 +74,10 @@ inbox/Thailand-Bangkok-2026-March/cover.txt   → use this one as the cover
 
 The first photo named is the featured one: the whole cover in `classic`,
 `duotone` and `frame`, the large photo in `split`, the top-left tile in
-`collage`, and one of the bars in `strips`. For the multi-photo designs you
-can list several: they are used first, and the tool fills the rest.
+`collage`. For `strips`, the photos named fill the bars left to right in the
+order written, and the tool fills any bars left over. For the multi-photo
+designs you can list several: they are used first, and the tool fills the
+rest.
 
 `cover.txt` exists because choosing a cover means judging whether a picture
 *represents* the trip, and nothing measurable separates a temple from a

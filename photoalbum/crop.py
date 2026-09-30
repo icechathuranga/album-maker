@@ -127,8 +127,15 @@ def _thirds_score(imp_win):
     return float((imp_win * weight).sum() / total)
 
 
-def find(rgb, target_aspect, face_boxes=None, max_zoom_out=0.64):
-    """Best crop of `target_aspect` (w/h). Returns (x, y, w, h) in rgb pixels."""
+def find(rgb, target_aspect, face_boxes=None, max_zoom_out=0.64,
+         exclude_penalty=None):
+    """Best crop of `target_aspect` (w/h). Returns (x, y, w, h) in rgb pixels.
+
+    `exclude_penalty` overrides how much leaving a person out costs - anyone
+    but the main subject. A page slot keeps the default; a narrow cover strip
+    lowers it, since showing one of a couple cleanly beats cutting both.
+    """
+    excl = EXCLUDE_PENALTY if exclude_penalty is None else exclude_penalty
     H, W = rgb.shape[:2]
     if target_aspect <= 0 or H < 8 or W < 8:
         return (0, 0, W, H)
@@ -186,7 +193,7 @@ def find(rgb, target_aspect, face_boxes=None, max_zoom_out=0.64):
                 # and those are very different mistakes. A face left out of
                 # frame is an editing decision; a face cut down the middle is
                 # the error people notice immediately in a printed album.
-                score -= _face_penalty(faces_px, x0, y0, x1, y1) * CUT_FACE_PENALTY
+                score -= _face_penalty(faces_px, x0, y0, x1, y1, excl) * CUT_FACE_PENALTY
 
                 win = imp[y0:y1, x0:x1]
                 score += _thirds_score(win) * THIRDS_BONUS * score
@@ -235,7 +242,7 @@ SLICE_GONE = 0.04    # below this it is simply not in the picture
 EXCLUDE_PENALTY = 1.55
 
 
-def _face_penalty(faces_px, x0, y0, x1, y1):
+def _face_penalty(faces_px, x0, y0, x1, y1, exclude_penalty=EXCLUDE_PENALTY):
     """How badly this window treats the faces in the frame. 0 is clean.
 
     Three outcomes per face:
@@ -257,7 +264,10 @@ def _face_penalty(faces_px, x0, y0, x1, y1):
         if frac >= SLICE_OK:
             continue
         if frac <= SLICE_GONE:
-            total += EXCLUDE_PENALTY * weight       # left out of the picture
+            # Left out of the picture. The largest face (weight 1) is the
+            # subject and always costs the full amount, whatever the caller
+            # allows for everyone else.
+            total += (EXCLUDE_PENALTY if weight >= 0.999 else exclude_penalty) * weight
             continue
         # Peaks at frac = 0.5 and falls away towards either clean outcome.
         severity = 1.0 - abs(frac - 0.5) * 2.0
