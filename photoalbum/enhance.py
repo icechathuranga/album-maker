@@ -52,8 +52,10 @@ LOOKS = {
                 "warmth": 0.035, "clarity": 0.06,
                 "lift": 0.055, "rolloff": 0.05},
 
-    "mono":    {"vibrance": 0.0, "saturation": 0.0, "scurve": 1.26,
-                "warmth": 0.0, "clarity": 0.22},
+    # high-contrast black and white: rich blacks, clean whites, as current
+    # albums print it - not the flat grey of a desaturated photo
+    "mono":    {"vibrance": 0.0, "saturation": 0.0, "scurve": 1.30,
+                "warmth": 0.0, "clarity": 0.22, "clip": True},
 
     # portraits: gentle contrast and eased highlights, kind to skin
     "soft":    {"vibrance": 0.18, "saturation": 1.00, "scurve": 1.08,
@@ -232,12 +234,15 @@ def _clarity(img, amount):
 # What `auto` may choose for a chapter, by what its photos show. Two or more
 # per kind so neighbouring chapters can differ; mono is never chosen for you -
 # a random black-and-white chapter reads as a mistake, not a style.
+# True-to-colour leads: it is what current wedding and travel albums print,
+# and heavily saturated looks date fastest. `vivid` is kept for bright
+# scenery, `golden` for real lamplight and evening.
 AUTO_CANDIDATES = {
-    "dim":    ("film", "warm"),       # dark or grainy: film forgives both
+    "dim":    ("film", "natural"),    # dark or grainy: film forgives both
     "lamp":   ("warm", "golden"),     # warm light: go with it, not against it
-    "people": ("vivid", "soft"),
-    "scenic": ("vivid", "crisp"),
-    "mixed":  ("vivid", "warm"),
+    "people": ("natural", "soft"),
+    "scenic": ("crisp", "vivid"),
+    "mixed":  ("natural", "film"),
 }
 
 
@@ -300,6 +305,46 @@ def auto_looks(pages, seed=""):
     return chosen
 
 
+MONO_SHARE = 0.10        # share of photos printed in black and white
+
+
+def mono_pages(pages, share=MONO_SHARE):
+    """Turn roughly `share` of the album's photos black and white, by page.
+
+    Whole pages convert, so a black-and-white photo never sits beside a
+    colour one. The pages chosen are the ones colour helps least - weak
+    colour, a light cast that balancing could not fully remove - and the
+    ones with people in them, where monochrome reads as emotion rather than
+    as a missing colour. Never two in a row, never a chapter opener or a
+    detail page (those are about colour). Returns the pages converted.
+    """
+    total = sum(len(pg.photos) for pg in pages)
+    if share <= 0 or not total:
+        return []
+
+    def suits(pg):
+        ph = pg.photos
+        colour = np.mean([(p.scores or {}).get("colorfulness", 0.5) for p in ph])
+        cast = np.mean([(p.scores or {}).get("wb_to", 0.0) for p in ph])
+        people = np.mean([1.0 if (p.scores or {}).get("faces", 0) else 0.0 for p in ph])
+        return (0.55 - colour) + 0.05 * cast + 0.25 * people
+
+    ranked = sorted((pg for pg in pages if pg.photos and pg.kind == "photos"),
+                    key=lambda pg: (-suits(pg), pg.index))
+    chosen, count = set(), 0
+    for pg in ranked:
+        if count >= share * total:
+            break
+        if pg.index - 1 in chosen or pg.index + 1 in chosen:
+            continue
+        chosen.add(pg.index)
+        count += len(pg.photos)
+    out = [pg for pg in pages if pg.index in chosen]
+    for pg in out:
+        pg.look = "mono"
+    return out
+
+
 def grade(img, look=DEFAULT_LOOK):
     """Apply a named look. Runs after the corrective pass, before sharpening."""
     spec = LOOKS.get(look)
@@ -307,6 +352,10 @@ def grade(img, look=DEFAULT_LOOK):
         return img, []
     notes = []
 
+    if spec.get("clip"):
+        # Set true black and white points first, so the curve has the whole
+        # range to work with.
+        img, _ = _auto_levels(img, black_pct=0.5, white_pct=99.5)
     if spec.get("scurve", 1.0) > 1.0 or spec.get("lift"):
         img, done = _scurve(img, spec.get("scurve", 1.0),
                             spec.get("lift", 0.0), spec.get("rolloff", 0.0))

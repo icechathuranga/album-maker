@@ -18,7 +18,7 @@ Multi-photo styles need enough usable photos; with too few they fall back to
 """
 import colorsys
 
-from .deps import np, Image, ImageFilter
+from .deps import np, cv2, HAS_CV2, Image, ImageFilter
 from . import ingest, enhance, crop, dedupe
 from .curate import SCENE_BITS
 
@@ -171,6 +171,60 @@ def need_aspect(p):
     return span * (p.aspect or 1.0)
 
 
+REPEAT_PENALTY = 150.0
+
+
+SAME_SETTING = 0.65      # colour-histogram overlap above which two look alike
+_SIGNATURES = {}
+
+
+def _signature(p):
+    """A small colour histogram of the photo, cached by path.
+
+    Orientation does not change a histogram, so the file is decoded at a
+    fraction of its size with no rotation - a few milliseconds a photo.
+    """
+    sig = _SIGNATURES.get(p.path)
+    if sig is None:
+        try:
+            with Image.open(p.path) as im:
+                im.draft("RGB", (160, 160))
+                a = np.asarray(im.convert("RGB").resize((96, 96)), dtype=np.uint8)
+            hsv = cv2.cvtColor(a, cv2.COLOR_RGB2HSV)
+            h = cv2.calcHist([hsv], [0, 1, 2], None, [12, 4, 4],
+                             [0, 180, 0, 256, 0, 256]).ravel()
+            sig = h / max(float(h.sum()), 1.0)
+        except Exception:
+            sig = False
+        _SIGNATURES[p.path] = sig
+    return sig
+
+
+def _same_setting(a, b):
+    """Same place, same people, same colours - even hours apart.
+
+    The scene hash misses two frames of the same girls on the same red sofa
+    taken 37 minutes apart; their colour histograms overlap 0.74, where
+    unrelated photos from the same wedding stay under 0.6.
+    """
+    if not HAS_CV2:
+        return False
+    sa, sb = _signature(a), _signature(b)
+    if sa is False or sb is False:
+        return False
+    return float(np.minimum(sa, sb).sum()) >= SAME_SETTING
+
+
+def repeats(a, b, gap_seconds):
+    """Are these two frames of the same moment: same scene, minutes apart,
+    or the same setting photographed again?"""
+    if _same_scene(a, b):
+        return True
+    if a.taken and b.taken and abs((a.taken - b.taken).total_seconds()) < gap_seconds:
+        return True
+    return _same_setting(a, b)
+
+
 def pick_set(pool, n, tile_aspect, first=None, named=(), gap_seconds=240,
              avoid=(), striking=0.0, stretch=1.0, subject_only=False,
              named_first=False):
@@ -219,13 +273,12 @@ def pick_set(pool, n, tile_aspect, first=None, named=(), gap_seconds=240,
             else:
                 v -= 80.0 * _face_misfit(p, tile_aspect * stretch)
             for c in chosen + avoid:
-                if _same_scene(p, c):
-                    v -= 35.0
+                if repeats(p, c, gap_seconds):
+                    # Two frames of one moment side by side read as a
+                    # mistake. Only taken when nothing else is left.
+                    v -= REPEAT_PENALTY
                 if p.segment == c.segment:
                     v -= 8.0
-                if p.taken and c.taken and \
-                        abs((p.taken - c.taken).total_seconds()) < gap_seconds:
-                    v -= 22.0
             has_people = bool((p.scores or {}).get("faces", 0))
             half = len(chosen) / 2.0
             if has_people and people > half + 0.5:
@@ -394,14 +447,22 @@ def _strip_widths(photos, W, H):
 
 
 def _strips(W, H, hero, pool, ctx):
-    n = 5 if W <= H else 6
     named = ctx["named"]
-    photos = pick_set(pool, n, (W / float(n)) / H,
-                      first=hero if named else None, named=named,
-                      gap_seconds=ctx["gap"], striking=1.0,
-                      stretch=STRIP_STRETCH[1], subject_only=True,
-                      named_first=True)
-    if len(photos) < n:
+    # Fewer, wider strips rather than repeating a moment: a small folder may
+    # not have six distinct ones. Photos named in cover.txt are the user's
+    # call and never count against this.
+    for n in range(5 if W <= H else 6, 3, -1):
+        photos = pick_set(pool, n, (W / float(n)) / H,
+                          first=hero if named else None, named=named,
+                          gap_seconds=ctx["gap"], striking=1.0,
+                          stretch=STRIP_STRETCH[1], subject_only=True,
+                          named_first=True)
+        auto = [p for p in photos if p.name.lower() not in named]
+        clash = any(repeats(a, b, ctx["gap"]) for i, a in enumerate(photos)
+                    for b in photos[i + 1:] if a in auto or b in auto)
+        if len(photos) == n and not clash:
+            break
+    if len(photos) < 4:
         return None
 
     # Full height, edge to edge: no gutter, no band, nothing white.

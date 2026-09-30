@@ -26,7 +26,20 @@ DEFAULTS = {
     "bleed_heroes": True,          # let the best photos run off the paper edge
     "bleed_singles": True,         # any lone photo may run to the paper edge
     "bleed_multi_every": 2,        # every Nth multi-photo page runs to the edge
-                                   # (1 = all of them, 0 = none)
+                                   # (1 = all of them, 0 = none; bordered only)
+    # paper    = photos grouped with space round them on a flat paper colour
+    #            taken from the photos (dark for night pages), crisp edges,
+    #            no shadows; 1-3 photos a page, people-free detail grids,
+    #            a calm page after every busy one
+    # float    = the same grouping, floating on shadows over a blurred wash
+    # blend    = every page edge to edge, photos cross-fade where they meet
+    # bordered = white margins, white gaps and framed insets (the old look)
+    "page_style": "paper",
+    "chapter_openers": True,        # paper/float: title pages at real breaks
+    "route_map": True,              # a map of the trip when photos have GPS
+    "mono_share": 0.10,             # share of photos printed black and white
+    "page_gap_mm": 5.0,             # paper/float pages: one gap everywhere
+    "page_margin_mm": 14.0,         # ...and one margin
 
     # How much of a photo may be cropped to make it fill its cell before the
     # cell instead shrinks to the photo. Higher = fuller pages, less white
@@ -98,12 +111,29 @@ _LOOKS = ("natural", "vivid", "warm", "film", "mono", "soft", "crisp", "golden")
 # "auto" in a spec already means orientation, so the automatic look has its own word.
 _LOOK_ALIASES = {"autolook": "auto"}
 _ORIENTATIONS = ("portrait", "landscape", "auto")
+_PAGE_STYLES = {"paper": "paper", "floating": "float", "float": "float",
+                "blended": "blend",
+                "blend": "blend", "bordered": "bordered"}
 _COVER_STYLES = ("classic", "strips", "collage", "split", "duotone", "frame")
 
 # Density words, for "A4 landscape 35 pages tight".
 _DENSITY = {
-    "tight":  {"margin_mm": 10.0, "gutter_mm": 2.0, "fill_crop_budget": 0.58},
-    "airy":   {"margin_mm": 22.0, "gutter_mm": 4.0, "fill_crop_budget": 0.34},
+    "tight":  {"margin_mm": 10.0, "gutter_mm": 2.0, "fill_crop_budget": 0.58,
+               "page_margin_mm": 9.0, "page_gap_mm": 3.0},
+    "airy":   {"margin_mm": 22.0, "gutter_mm": 4.0, "fill_crop_budget": 0.34,
+               "page_margin_mm": 20.0, "page_gap_mm": 7.0},
+}
+
+# Genre presets: the settings a designer would pick for that kind of book.
+# Anything else said in the same spec wins over them.
+_PRESETS = {
+    "wedding": {"look": "auto", "mono_share": 0.15, "route_map": False,
+                "chapter_openers": True, "page_style": "paper"},
+    "travel":  {"look": "auto", "mono_share": 0.08, "route_map": True,
+                "chapter_openers": True, "page_style": "paper"},
+    "zine":    {"look": "film", "mono_share": 0.25, "route_map": True,
+                "chapter_openers": True, "page_style": "paper",
+                "page_margin_mm": 9.0, "page_gap_mm": 3.0},
 }
 
 
@@ -120,7 +150,7 @@ def parse_spec(text, page_sizes=None):
     import re
 
     sizes = set(page_sizes or ())
-    out, unknown = {}, []
+    out, unknown, preset = {}, [], {}
     if not text:
         return out, unknown
 
@@ -142,10 +172,14 @@ def parse_spec(text, page_sizes=None):
             out["look"] = token
         elif token in _LOOK_ALIASES:
             out["look"] = _LOOK_ALIASES[token]
+        elif token in _PAGE_STYLES:
+            out["page_style"] = _PAGE_STYLES[token]
         elif token in _COVER_STYLES:
             out["cover_style"] = token
         elif token in _DENSITY:
             out.update(_DENSITY[token])
+        elif token in _PRESETS:
+            preset.update(_PRESETS[token])
         elif re.fullmatch(r"\d{1,3}", token):
             out["target_pages"] = int(token)
         elif re.fullmatch(r"\d{2,3}dpi", token):
@@ -153,6 +187,8 @@ def parse_spec(text, page_sizes=None):
         else:
             unknown.append(token)
 
+    for key, value in preset.items():
+        out.setdefault(key, value)
     return out, unknown
 
 

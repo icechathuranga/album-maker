@@ -10,8 +10,9 @@ import os
 import shutil
 import tempfile
 
-from .deps import np, Image, ImageDraw, ImageFont, HAS_REPORTLAB
+from .deps import np, cv2, Image, ImageDraw, ImageFont, ImageFilter, HAS_REPORTLAB
 from . import ingest, enhance, crop, cover as covers, faces as facedet, places
+from .layout import Slot
 
 if HAS_REPORTLAB:
     from reportlab.pdfgen import canvas as rl_canvas
@@ -274,6 +275,259 @@ def _cover_image(style, hero, pool, page_w, page_h, target_dpi, workdir,
     return out, text, used
 
 
+# --- blended pages ----------------------------------------------------------
+#
+# The printed-album look this replaces - photos in white margins, white lines
+# between them, insets in white frames - reads as a scrapbook. Here the whole
+# page is composed as one picture: photos run to the paper edge, neighbours
+# cross-fade over a few millimetres instead of meeting at a white line, any
+# space a photo does not fill is a blurred, darkened wash of the page's own
+# photos, and insets float on a soft shadow with no frame.
+
+BLEND_MM = 6.0            # widest cross-fade between two photos
+BLEND_SHARE = 0.16        # ...and never more than this share of the slot
+EDGE_EPS_MM = 0.5         # an edge this close to the paper edge is a paper edge
+
+
+def _ramp(n, width):
+    """0 -> 1 over `width` pixels, smoothstepped, then flat at 1."""
+    x = np.clip(np.arange(n, dtype=np.float32) / max(1.0, width), 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _backdrop(paths_and_areas, W, H):
+    """A blurred, darkened wash of the page's largest photo, filling the page."""
+    path = max(paths_and_areas, key=lambda t: t[1])[0]
+    with Image.open(path) as im:
+        small = im.convert("RGB")
+        small.thumbnail((max(16, W // 10), max(16, H // 10)))
+    k = max(W / float(small.width), H / float(small.height))
+    small = small.resize((max(1, int(small.width * k / 10) + 1),
+                          max(1, int(small.height * k / 10) + 1)), Image.BILINEAR)
+    small = small.filter(ImageFilter.GaussianBlur(max(2, small.width // 18)))
+    a = np.asarray(small, dtype=np.float32) * 0.55
+    big = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).resize(
+        (small.width * 10, small.height * 10), Image.BICUBIC)
+    left, top = (big.width - W) // 2, (big.height - H) // 2
+    return big.crop((left, top, left + W, top + H))
+
+
+def _soft_shadow(canvas, box, radius, strength=0.78, offset=(0, 0)):
+    """Darken a blurred rectangle under an inset - a shadow with no frame."""
+    x0, y0, x1, y1 = box
+    pad = radius * 3
+    mask = Image.new("L", (x1 - x0 + 2 * pad, y1 - y0 + 2 * pad), 0)
+    ImageDraw.Draw(mask).rectangle((pad, pad, pad + x1 - x0, pad + y1 - y0),
+                                   fill=int(255 * strength))
+    mask = mask.filter(ImageFilter.GaussianBlur(radius))
+    black = Image.new("RGB", mask.size, (0, 0, 0))
+    canvas.paste(black, (x0 - pad + offset[0], y0 - pad + offset[1]), mask)
+
+
+PAPER_L_LIGHT = 93.0      # LAB lightness of the paper on ordinary pages
+PAPER_L_DARK = 14.0       # ...and on dim, night-time pages
+PAPER_CHROMA = 6.0        # a tint of the photos' colour, never a colour
+INSET_EDGE_MM = 0.7       # paper-coloured hairline round an inset photo
+DIM_PAGE = 90.0           # median brightness below which a page is "night"
+
+
+def _paper_colour(page, paths):
+    """A flat paper colour for this page, drawn from its own photos.
+
+    The dominant colour of the page (weighted towards what the eye notices,
+    as the cover accent is) desaturated to a faint tint: a warm cream beside
+    sunset photos, a cool grey beside the sea. Dim chapters get a near-black
+    in the same hue, so night photos are not framed in glaring light paper.
+    Returns ((r, g, b) 0-255, is_dark).
+    """
+    samples = []
+    for path in paths:
+        with Image.open(path) as im:
+            samples.append(np.asarray(im.convert("RGB").resize((32, 32)),
+                                      dtype=np.float32).reshape(-1, 3))
+    a = np.concatenate(samples) / 255.0
+    mx, mn = a.max(axis=1), a.min(axis=1)
+    weight = (mx - mn) / (mx + 1e-6) * mx + 1e-3
+    mean = (a * weight[:, None]).sum(axis=0) / weight.sum()
+    lab = cv2.cvtColor(mean.reshape(1, 1, 3).astype(np.float32), cv2.COLOR_RGB2LAB)[0, 0]
+    chroma = float(np.hypot(lab[1], lab[2])) or 1.0
+    k = min(1.0, PAPER_CHROMA / chroma)
+    bright = [(p.scores or {}).get("mean_brightness", 128.0) for p in page.photos]
+    dark = bool(bright) and float(np.median(bright)) < DIM_PAGE
+    out = np.array([[[PAPER_L_DARK if dark else PAPER_L_LIGHT,
+                      lab[1] * k, lab[2] * k]]], dtype=np.float32)
+    rgb = cv2.cvtColor(out, cv2.COLOR_LAB2RGB)[0, 0]
+    return tuple(int(round(float(np.clip(c, 0, 1)) * 255)) for c in rgb), dark
+
+
+def _draw_opener_text(c, pw, ph, title, subtitle):
+    """A chapter's name across the middle of its opening photo."""
+    serif, light = _register_display_fonts()
+    name = (title or subtitle or "").upper()
+    if not name:
+        return
+    size = 40.0
+    while size > 18 and _spaced_width(c, name, serif, size, size * 0.28) > pw * 0.8:
+        size -= 1
+    y = ph * 0.48
+    _draw_spaced(c, pw / 2.0, y, name, serif, size, size * 0.28,
+                 Color(1, 1, 1), shadow=0.3)
+    if title and subtitle:
+        ss = max(9.0, size * 0.26)
+        _draw_spaced(c, pw / 2.0, y - size * 0.5 - ss, subtitle.upper(), light, ss,
+                     ss * 0.32, Color(0.93, 0.93, 0.94), shadow=0.3)
+
+
+PAPER_ROUTE = (0.965, 0.952, 0.925)     # warm paper for the map
+INK_ROUTE = (0.24, 0.21, 0.19)
+
+
+def _draw_route_page(c, pw, ph, stop_list, title, subtitle):
+    """Where the trip went: a line through the stops, named, on plain paper.
+
+    No map tiles and no internet - the shape of the journey is the picture.
+    """
+    from . import route
+    serif, light = _register_display_fonts()
+    c.setFillColor(Color(*PAPER_ROUTE))
+    c.rect(-2, -2, pw + 4, ph + 4, stroke=0, fill=1)
+    ink = Color(*INK_ROUTE)
+    soft = Color(*[0.45 * v + 0.55 * 0.62 for v in INK_ROUTE])
+
+    head = covers.display_title(title).upper()
+    size = 26.0
+    while size > 14 and _spaced_width(c, head, serif, size, size * 0.3) > pw * 0.8:
+        size -= 1
+    _draw_spaced(c, pw / 2.0, ph * 0.88, head, serif, size, size * 0.3, ink)
+    _draw_spaced(c, pw / 2.0, ph * 0.88 - size * 0.9, "THE ROUTE", light, 8.5,
+                 8.5 * 0.4, soft)
+
+    # Reportlab measures up from the bottom; the projection's box is in the
+    # same space, so north stays up.
+    pts = route.project(stop_list, (pw * 0.16, ph * 0.14, pw * 0.84, ph * 0.72))
+    c.setStrokeColor(ink)
+    c.setLineWidth(1.3)
+    c.setDash(4, 3)
+    path = c.beginPath()
+    path.moveTo(*pts[0])
+    for x, y in pts[1:]:
+        path.lineTo(x, y)
+    c.drawPath(path, stroke=1, fill=0)
+    c.setDash()
+
+    for i, ((x, y), stop) in enumerate(zip(pts, stop_list)):
+        r = 4.0 if i in (0, len(pts) - 1) else 2.8
+        c.setFillColor(ink)
+        c.circle(x, y, r, stroke=0, fill=1)
+        label = (stop["label"] or "").upper()
+        right = x < pw * 0.7
+        tx = x + 8 if right else x - 8
+        for text, font, fs, col, dy in ((label, light, 10.0, ink, 1.5),
+                                        (stop["when"].upper(), light, 7.5, soft, -10.0)):
+            if not text:
+                continue
+            w = _spaced_width(c, text, font, fs, fs * 0.25)
+            _draw_spaced(c, (tx + w / 2.0) if right else (tx - w / 2.0), y + dy,
+                         text, font, fs, fs * 0.25, col)
+    if subtitle:
+        _draw_spaced(c, pw / 2.0, ph * 0.07, subtitle.upper(), light, 8.0, 8.0 * 0.35, soft)
+    c.showPage()
+
+
+def _blend_page(page, page_w, page_h, dpi, workdir, prepare, float_photos=False,
+                paper=False):
+    """Compose one page as a single picture. Returns (path, [(photo, notes)]).
+
+    `prepare(photo, slot)` returns the finished JPEG path and notes for a
+    photo in a slot, exactly as for a bordered page. With `float_photos`,
+    photos inside the page keep their own edges and float on a soft shadow
+    over the blurred wash, instead of cross-fading into their neighbours.
+    With `paper`, they sit crisp on a flat paper colour taken from the
+    photos - no shadow, no blur - and insets get a paper-coloured edge.
+    Returns (path, done, paper_colour or None, is_dark).
+    """
+    float_photos = float_photos or paper
+    W = max(1, int(round(page_w / 25.4 * dpi)))
+    H = max(1, int(round(page_h / 25.4 * dpi)))
+    px = dpi / 25.4
+    done, laid = [], []
+
+    for slot in page.slots:
+        if slot.photo is None:
+            continue
+        if slot.frame or (float_photos and not slot.bleed):
+            path, notes = prepare(slot.photo, slot)
+            laid.append((slot, path, None))
+            done.append((slot, notes))
+            continue
+        # Grow each edge that is inside the paper by half a blend, so two
+        # neighbours overlap by a whole one and can cross-fade.
+        b = min(BLEND_MM, BLEND_SHARE * min(slot.w, slot.h))
+        inner = {"l": slot.x > EDGE_EPS_MM, "t": slot.y > EDGE_EPS_MM,
+                 "r": slot.x + slot.w < page_w - EDGE_EPS_MM,
+                 "b": slot.y + slot.h < page_h - EDGE_EPS_MM}
+        grown = Slot(slot.x - (b / 2 if inner["l"] else 0),
+                     slot.y - (b / 2 if inner["t"] else 0),
+                     slot.w + b / 2 * (inner["l"] + inner["r"]),
+                     slot.h + b / 2 * (inner["t"] + inner["b"]))
+        path, notes = prepare(slot.photo, grown)
+        laid.append((grown, path, (inner, b)))
+        done.append((slot, notes))
+
+    if not laid:
+        return None, done, None, False
+    tint, dark = None, False
+    if paper:
+        tint, dark = _paper_colour(page, [p for _, p, _ in laid])
+        canvas = Image.new("RGB", (W, H), tint)
+    else:
+        canvas = _backdrop([(p, s.w * s.h) for s, p, _ in laid], W, H)
+
+    # Full photos first, insets last so they sit on top.
+    for slot, path, fade in sorted(laid, key=lambda t: t[2] is None):
+        with Image.open(path) as im:
+            img = im.convert("RGB")
+        x0, y0 = int(round(slot.x * px)), int(round(slot.y * px))
+        img = img.resize((max(1, int(round(slot.w * px))),
+                          max(1, int(round(slot.h * px)))), Image.LANCZOS) \
+            if img.size != (int(round(slot.w * px)), int(round(slot.h * px))) else img
+        if fade is None and paper:
+            if slot.frame:
+                e = max(2, int(round(INSET_EDGE_MM * px)))
+                canvas.paste(Image.new("RGB", (img.width + 2 * e, img.height + 2 * e),
+                                       tint), (x0 - e, y0 - e))
+            canvas.paste(img, (x0, y0))
+            continue
+        if fade is None:
+            r = max(4, int(4.0 * px))
+            _soft_shadow(canvas, (x0, y0, x0 + img.width, y0 + img.height), r,
+                         offset=(int(r * 0.3), int(r * 0.5)))
+            canvas.paste(img, (x0, y0))
+            continue
+        inner, b = fade
+        w_px = b * px
+        mx = np.ones(img.width, dtype=np.float32)
+        my = np.ones(img.height, dtype=np.float32)
+        if inner["l"]:
+            mx = np.minimum(mx, _ramp(img.width, w_px))
+        if inner["r"]:
+            mx = np.minimum(mx, _ramp(img.width, w_px)[::-1])
+        if inner["t"]:
+            my = np.minimum(my, _ramp(img.height, w_px))
+        if inner["b"]:
+            my = np.minimum(my, _ramp(img.height, w_px)[::-1])
+        mask = Image.fromarray((np.outer(my, mx) * 255).astype(np.uint8), "L")
+        canvas.paste(img, (x0, y0), mask)
+
+    if page.kind == "opener":
+        # A soft shade across the middle for the chapter title to sit on.
+        canvas = covers._title_band(canvas, 0.52, spread=0.15, strength=0.42, edge=0.0)
+    out = os.path.join(workdir, "page_%04d.jpg" % page.index)
+    canvas.save(out, "JPEG", quality=JPEG_QUALITY, optimize=True,
+                dpi=(int(dpi), int(dpi)))
+    return out, done, tint, dark
+
+
 # Where an inset may sit, as the top-left corner in page fractions. Both sides
 # at three heights: the inset always hugs a margin, so it reads as a deliberate
 # placement rather than something dropped in the middle of the picture.
@@ -282,6 +536,36 @@ INSET_CANDIDATES = (
     (0.055, 0.320), (0.575, 0.320),      # mid height
     (0.055, 0.585), (0.575, 0.585),      # bottom corners
 )
+
+
+def choose_inset_side(bg_path, insets, page_w, page_h):
+    """Put a stacked pair of insets on the left or right, whichever covers
+    less of the finished background - people found or not."""
+    try:
+        with Image.open(bg_path) as img:
+            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    except Exception:
+        return
+    H, W = rgb.shape[:2]
+    boxes = facedet.detect(rgb)
+    imp, _ = crop.importance_map(rgb, [(x / W, y / H, w / W, h / H, sc)
+                                       for x, y, w, h, sc in boxes])
+    mh, mw = imp.shape
+
+    def covered(xs):
+        total = 0.0
+        for ins, x in zip(insets, xs):
+            x0, y0 = int(x / page_w * mw), int(ins.y / page_h * mh)
+            x1 = min(mw, int((x + ins.w) / page_w * mw))
+            y1 = min(mh, int((ins.y + ins.h) / page_h * mh))
+            total += float(imp[max(0, y0):y1, max(0, x0):x1].sum())
+        return total
+
+    here = [s.x for s in insets]
+    mirror = [page_w - s.x - s.w for s in insets]
+    if covered(mirror) < covered(here):
+        for s, x in zip(insets, mirror):
+            s.x = x
 
 
 def choose_inset_position(bg_path, w_frac, h_frac):
@@ -401,7 +685,7 @@ def render(pages, out_path, page_w, page_h, title="Album", subtitle="", detail="
            background=(1.0, 1.0, 1.0), workdir=None, progress=None,
            smart_crop=True, cover_photo=None, look="vivid", captions="auto",
            cover_style=covers.DEFAULT_STYLE, cover_pool=(), cover_named=(),
-           cover_gap=240):
+           cover_gap=240, page_style="paper", route_stops=None):
     """Write the PDF. Returns a dict of what happened."""
     if not HAS_REPORTLAB:
         raise RuntimeError("reportlab is not installed - cannot write a PDF")
@@ -433,6 +717,9 @@ def render(pages, out_path, page_w, page_h, title="Album", subtitle="", detail="
         _draw_cover(c, page_w, page_h, title, subtitle, detail, fonts,
                     image_path=cover_img, text=text)
 
+    if route_stops:
+        _draw_route_page(c, pw_pt, ph_pt, route_stops, title, subtitle)
+
     all_notes = {}
     prepared = {}
     skipped_photos = []
@@ -453,10 +740,64 @@ def render(pages, out_path, page_w, page_h, title="Album", subtitle="", detail="
                                          do_enhance, background=background,
                                          smart_crop=smart_crop, look=page_look)
             prepared[id(bg_slot)] = (bg_path, bg_notes)
-            for ins in inset_slots:
+            if len(inset_slots) == 1:
+                ins = inset_slots[0]
                 spot = choose_inset_position(bg_path, ins.w / page_w, ins.h / page_h)
                 if spot:
                     ins.x, ins.y = spot[0] * page_w, spot[1] * page_h
+            else:
+                # A stacked pair moves as one, to whichever side hides less.
+                choose_inset_side(bg_path, inset_slots, page_w, page_h)
+
+        if page_style in ("blend", "float", "paper"):
+            def prep(photo, slot, _look=page_look):
+                key = id(slot)
+                if key in prepared:
+                    return prepared.pop(key)
+                return _prepare(photo, slot, target_dpi, tmp, do_enhance,
+                                background=background, smart_crop=smart_crop,
+                                look=_look)
+            # The inset decision above used the background at its own size;
+            # keep that file for the grown background slot too.
+            if bg_slot is not None and id(bg_slot) in prepared:
+                prepared.pop(id(bg_slot))
+            try:
+                path, done, tint, dark = _blend_page(
+                    page, page_w, page_h, target_dpi, tmp, prep,
+                    float_photos=(page_style == "float"),
+                    paper=(page_style == "paper"))
+            except (FileNotFoundError, OSError):
+                path, done, tint, dark = None, [], None, False
+                skipped_photos.extend(s.photo.name for s in page.slots if s.photo)
+            if path:
+                over = 1.5 * MM_TO_PT
+                c.drawImage(path, -over, -over, width=pw_pt + 2 * over,
+                            height=ph_pt + 2 * over, preserveAspectRatio=False)
+            if path and page.kind == "opener":
+                _draw_opener_text(c, pw_pt, ph_pt, page.title, page.subtitle)
+            for slot, notes in done:
+                if notes:
+                    all_notes[slot.photo.name] = notes
+                placed += 1
+                if progress:
+                    progress(placed, total, slot.photo.name)
+            if captions and captions != "off":
+                text = next((t for t in (places.caption(p, captions)
+                                         for p in page.photos if p) if t), "")
+                if text and tint is not None and not page.is_bleed:
+                    # On the paper margin: small spaced capitals in a tone of
+                    # the paper, the way an editorial caption sits.
+                    _, light = _register_display_fonts()
+                    ink = (Color(0.82, 0.82, 0.84) if dark else
+                           Color(*[max(0.0, c / 255.0 * 0.42) for c in tint]))
+                    _draw_spaced(c, pw_pt / 2.0, 6.0 * MM_TO_PT, text.upper(),
+                                 light, 6.5, 6.5 * 0.28, ink)
+                elif text and tint is None:
+                    # Over the picture, so white with a faint shadow.
+                    _draw_spaced(c, pw_pt / 2.0, 6.0 * MM_TO_PT, text, regular,
+                                 6.8, 0.4, Color(1, 1, 1, alpha=0.9), shadow=0.45)
+            c.showPage()
+            continue
 
         for slot in page.slots:
             if slot.photo is None:

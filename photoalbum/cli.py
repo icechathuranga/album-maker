@@ -15,7 +15,7 @@ import sys
 import time
 
 from . import (colour, config, cover, curate, dedupe, enhance, faces, ingest,
-               layout, pdf, places, preview, quality, report)
+               layout, pdf, places, preview, quality, report, route)
 from .deps import report as deps_report, HAS_REPORTLAB
 
 
@@ -108,6 +108,21 @@ def _pick_cover(selected, page_w, page_h, named=None):
     return max(selected, key=rank)
 
 
+def _chapter_place(photos):
+    """The town most of a chapter's photos were taken in, or ''."""
+    names = [p.place[0] for p in photos if getattr(p, "place", None)]
+    return max(sorted(set(names)), key=names.count) if names else ""
+
+
+def _chapter_when(photo):
+    """'Saturday evening · 01 March' - the line under a chapter title."""
+    if not photo.taken:
+        return ""
+    return "%s %s  ·  %s" % (photo.taken.strftime("%A"),
+                             places.part_of_day(photo.taken),
+                             photo.taken.strftime("%d %B"))
+
+
 def _fmt_range(photos):
     # Only photos whose capture time is actually known. Undated ones carry the
     # date they were copied, which stretched a one-week trip across six months.
@@ -197,6 +212,7 @@ def fit_to_pages(photos, cfg, page_w, page_h, keep=None, verbose=False):
     aim = target * (1.0 + tol * 0.45)
 
     per_page = float(cfg["photos_per_page"])
+    style = cfg.get("page_style", "paper")
     attempts = []
     last_count = None
 
@@ -226,15 +242,41 @@ def fit_to_pages(photos, cfg, page_w, page_h, keep=None, verbose=False):
         if not selected:
             return [], [], per_page
 
+        spaced = style in ("paper", "float")
+        openers = {}
+        ordered = selected
+        if spaced and cfg.get("chapter_openers", True):
+            openers = layout.plan_openers(selected, page_w, page_h, target,
+                                          min_dpi=cfg["min_dpi"],
+                                          place_of=_chapter_place, when_of=_chapter_when)
+            # An opener leads its chapter, so move it to the chapter's start.
+            ordered = []
+            for p in selected:
+                if id(p) in openers:
+                    at = next((i for i, q in enumerate(ordered)
+                               if q.segment == p.segment), len(ordered))
+                    ordered.insert(at, p)
+                else:
+                    ordered.append(p)
         pages = layout.compose(
-            selected, page_w, page_h, margin=cfg["margin_mm"],
-            gutter=cfg["gutter_mm"], min_dpi=cfg["min_dpi"],
-            max_per_page=cfg["max_photos_per_page"],
+            ordered, page_w, page_h,
+            # Paper and floating pages use one margin and one gap for the whole
+            # book; blended pages cross-fade, so they have no gap at all.
+            margin=cfg["page_margin_mm"] if spaced else cfg["margin_mm"],
+            gutter=(cfg["page_gap_mm"] if spaced else
+                    0.0 if style == "blend" else cfg["gutter_mm"]),
+            min_dpi=cfg["min_dpi"],
+            # Curated pages: 1-3 photos, one clearly leading.
+            max_per_page=min(3, cfg["max_photos_per_page"]) if spaced
+            else cfg["max_photos_per_page"],
             hero_full_page=cfg["hero_full_page"],
             multi_photo_bias=cfg["multi_photo_bias"],
             bleed_mm=cfg["bleed_mm"], bleed_heroes=cfg["bleed_heroes"],
             bleed_singles=cfg["bleed_singles"],
-            bleed_multi_every=cfg["bleed_multi_every"])
+            bleed_multi_every=(1 if style == "blend" else 0 if spaced
+                               else cfg["bleed_multi_every"]),
+            overlap_bonus=0.4 if spaced else 0.0,
+            detail_pages=spaced, pacing=spaced, openers=openers)
 
         n = len(pages)
         # Chapters and heroes are what the next attempt resets, so keep them
@@ -352,8 +394,10 @@ def build(event_dir, out_dir, cfg, verbose=True, dry_run=False, cover_sheet=Fals
     skip = config.read_list_file(event_dir, "skip.txt")
     cover_order = config.read_list_ordered(event_dir, "cover.txt")
     cover_named = set(cover_order)
-    # A named cover has to survive selection to be printed on the cover.
-    keep = keep | cover_named
+    # A photo named for the cover is used on the cover whatever selection
+    # made of it, but it is not forced into the pages: a cover photo is often
+    # one frame of a burst the album already prints, and forcing it in put two
+    # near-identical full pages side by side.
     for p in photos:
         low = p.name.lower()
         if low in skip:
@@ -382,11 +426,19 @@ def build(event_dir, out_dir, cfg, verbose=True, dry_run=False, cover_sheet=Fals
         # The cover wears the look most of the album wears.
         album_look = max(sorted(set(page_looks)), key=page_looks.count) \
             if page_looks else enhance.DEFAULT_LOOK
+    # A few pages in black and white, the way current albums mix them in.
+    mono = enhance.mono_pages(pages, share=float(cfg.get("mono_share", 0.10))) \
+        if album_look != "mono" else []
+    route_stops = route.stops(selected) if cfg.get("route_map", True) else []
 
     stats = layout.stats(pages)
     stats["segments"] = n_groups and len(set(p.segment for p in selected))
     if cfg["look"] == enhance.AUTO:
         stats["looks"] = {str(k): v for k, v in sorted(chosen.items())}
+    stats["mono_pages"] = [pg.index + 1 for pg in mono]
+    stats["openers"] = [pg.index + 1 for pg in pages if pg.kind == "opener"]
+    stats["detail_pages"] = [pg.index + 1 for pg in pages if pg.kind == "detail"]
+    stats["route_stops"] = [s["label"] for s in route_stops]
 
     os.makedirs(out_dir, exist_ok=True)
     pdf_path = os.path.join(os.path.dirname(os.path.normpath(out_dir)), event + ".pdf")
@@ -401,7 +453,10 @@ def build(event_dir, out_dir, cfg, verbose=True, dry_run=False, cover_sheet=Fals
                      <= cfg["target_pages"] * cfg.get("page_tolerance", 0.10) + 0.5,
     }
 
-    hero = (_pick_cover(selected, page_w, page_h, named=cover_named)
+    cover_pool = selected + [p for p in photos
+                             if p.name.lower() in cover_named and p not in selected
+                             and p.status != "unreadable" and p.name.lower() not in skip]
+    hero = (_pick_cover(cover_pool, page_w, page_h, named=cover_named)
             if cfg["cover_photo"] else None)
     style = cfg.get("cover_style", cover.DEFAULT_STYLE)
     if style not in cover.STYLES:
@@ -415,7 +470,7 @@ def build(event_dir, out_dir, cfg, verbose=True, dry_run=False, cover_sheet=Fals
     if cover_sheet and hero is not None:
         sheet = os.path.join(out_dir, "covers.pdf")
         shown = pdf.render_covers(
-            sheet, page_w, page_h, hero=hero, pool=selected, look=album_look,
+            sheet, page_w, page_h, hero=hero, pool=cover_pool, look=album_look,
             named=cover_order, gap_seconds=cfg["hero_separation_seconds"],
             **cover_args)
         result["covers"] = sheet
@@ -435,8 +490,9 @@ def build(event_dir, out_dir, cfg, verbose=True, dry_run=False, cover_sheet=Fals
             cover=cfg["cover_page"], page_numbers=cfg["page_numbers"],
             progress=on_progress, smart_crop=cfg["smart_crop"], look=album_look,
             captions=cfg.get("captions", "auto"),
-            cover_photo=hero, cover_style=style, cover_pool=selected,
-            cover_named=cover_order, cover_gap=cfg["hero_separation_seconds"])
+            cover_photo=hero, cover_style=style, cover_pool=cover_pool,
+            cover_named=cover_order, cover_gap=cfg["hero_separation_seconds"],
+            page_style=cfg.get("page_style", "paper"), route_stops=route_stops)
         prog.done()
         result.update(info)
 

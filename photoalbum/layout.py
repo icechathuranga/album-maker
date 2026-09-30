@@ -122,6 +122,12 @@ TEMPLATES = {
         (0.0, 0.0, 1.0, 1.0, {"bleed": True}),
         (0.570, 0.585, 0.360, 0.340, {"frame": 2.2, "shadow": False})]},
 
+    # Two insets stacked down one side. _place_inset picks the side.
+    "inset_two": {"style": "overlap", "rects": [
+        (0.0, 0.0, 1.0, 1.0, {"bleed": True}),
+        (0.605, 0.070, 0.325, 0.405, {"frame": 2.2, "shadow": False}),
+        (0.605, 0.525, 0.325, 0.405, {"frame": 2.2, "shadow": False})]},
+
 
     # --- four photos -----------------------------------------------------
     "four_left":  {"cols": 2, "rows": 3,
@@ -151,7 +157,8 @@ TEMPLATES = {
 BY_COUNT = {
     2: ["pair_wide_l", "pair_wide_r", "pair_tall_t", "pair_tall_b", "two_h",
         "two_v", "inset_br"],
-    3: ["big_left", "big_right", "big_top", "big_bottom", "three_row", "three_col"],
+    3: ["big_left", "big_right", "big_top", "big_bottom", "three_row", "three_col",
+        "inset_two"],
     4: ["four_left", "four_right", "four_band", "four_grid"],
     6: ["six_feature", "six_grid"],
 }
@@ -188,14 +195,16 @@ class Slot:
 
 
 class Page:
-    __slots__ = ("index", "template", "slots", "kind", "look")
+    __slots__ = ("index", "template", "slots", "kind", "look", "title", "subtitle")
 
     def __init__(self, index, template, slots, kind="photos"):
         self.index = index
         self.template = template
         self.slots = slots
-        self.kind = kind
+        self.kind = kind           # photos | detail | opener
         self.look = None           # set by enhance.auto_looks; None = album look
+        self.title = ""            # opener pages: the chapter's name
+        self.subtitle = ""
 
     @property
     def photos(self):
@@ -509,12 +518,34 @@ def _place_inset(slots, page_w, page_h):
     ruins both photographs at once.
     """
     bg = next((s for s in slots if s.bleed and s.photo is not None), None)
-    inset = next((s for s in slots if s.frame and s.photo is not None), None)
-    if bg is None or inset is None:
+    insets = [s for s in slots if s.frame and s.photo is not None]
+    if bg is None or not insets:
         return slots
 
     page_aspect = page_w / float(page_h)
     faces = _faces_in_page_space(bg.photo, page_aspect)
+
+    if len(insets) > 1:
+        # A stacked pair moves as one: down the right side, or mirrored to
+        # the left, whichever covers less of the people underneath.
+        def cover_cost(xs):
+            cost = 0.0
+            for ins, x in zip(insets, xs):
+                fx, fy = x / page_w, ins.y / page_h
+                fw, fh = ins.w / page_w, ins.h / page_h
+                for (x0, y0, w0, h0) in faces:
+                    ox = max(0.0, min(fx + fw, x0 + w0) - max(fx, x0))
+                    oy = max(0.0, min(fy + fh, y0 + h0) - max(fy, y0))
+                    cost += ox * oy * (1.0 + 12.0 * (w0 * h0))
+            return cost
+        right = [s.x for s in insets]
+        left = [page_w - s.x - s.w for s in insets]
+        if cover_cost(left) < cover_cost(right):
+            for s, x in zip(insets, left):
+                s.x = x
+        return slots
+
+    inset = insets[0]
     fw, fh = inset.w / page_w, inset.h / page_h
 
     best, best_cost = None, None
@@ -617,20 +648,72 @@ def _single_page(photo, page_w, page_h, margin, gutter, min_dpi, bleed_mm,
     return Page(index, "single_adaptive", slots)
 
 
+def _similar(a, b, seconds, bits):
+    """Two frames of the same moment: close in time or alike to look at."""
+    if a.taken and b.taken and abs((b.taken - a.taken).total_seconds()) <= seconds:
+        return True
+    return (a.dhash is not None and b.dhash is not None
+            and _hamming(a.dhash, b.dhash) <= bits)
+
+
 def compose(selected, page_w, page_h, margin=16.0, gutter=2.5,
             min_dpi=MIN_DPI, max_per_page=4, hero_full_page=True,
             multi_photo_bias=0.9, bleed_mm=3.0, bleed_heroes=True,
             bleed_singles=True, bleed_multi_every=2,
-            same_scene_seconds=300, same_scene_bits=20):
-    """Group the selected photos into pages, chronological order preserved."""
+            same_scene_seconds=300, same_scene_bits=20, overlap_bonus=0.0,
+            detail_pages=False, pacing=False, openers=None):
+    """Group the selected photos into pages, chronological order preserved.
+
+    `detail_pages` gathers photos with nobody in them into small grids - the
+    "palate cleanser" pages album designers put between the people pages.
+    `pacing` never lets two busy pages (3+ photos) follow each other when a
+    calmer one can go between. `openers` maps id(photo) -> (title, subtitle):
+    that photo opens its chapter as a full page with the title laid over it.
+    """
+    openers = openers or {}
     pages = []
     queue = list(selected)
     index = 0
     solo = 0
     multi = 0
+    last_busy = False
 
     while queue:
         head = queue[0]
+
+        if id(head) in openers:
+            page = _single_page(head, page_w, page_h, margin, gutter, min_dpi,
+                                bleed_mm, index, allow_bleed=True, align="center")
+            page.kind = "opener"
+            page.title, page.subtitle = openers[id(head)]
+            pages.append(page)
+            queue.pop(0)
+            index += 1
+            solo += 1
+            last_busy = False
+            continue
+
+        if pacing and _is_small(head, page_w, page_h, margin, min_dpi):
+            page = _small_row(queue, page_w, page_h, margin, gutter, min_dpi, index)
+            if page is not None:
+                del queue[:len(page.photos)]
+                pages.append(page)
+                index += 1
+                multi += 1
+                last_busy = False
+                continue
+
+        if detail_pages and _is_detail(head):
+            page = _detail_page(queue, page_w, page_h, margin, gutter, min_dpi,
+                                bleed_mm, index, same_scene_seconds, same_scene_bits)
+            if page is not None:
+                for p in page.photos:
+                    queue.remove(p)
+                pages.append(page)
+                index += 1
+                multi += 1
+                last_busy = True
+                continue
 
         # Is the very next photo another look at the same thing?
         twin_next = False
@@ -656,6 +739,8 @@ def compose(selected, page_w, page_h, margin=16.0, gutter=2.5,
         while run < min(max_per_page, len(queue)) and not queue[run].hero:
             run += 1
         run = max(1, run)
+        if pacing and last_busy:
+            run = min(run, 2)             # a calm page after a busy one
 
         # A photo that would otherwise sit alone on a page, next to another
         # frame of the same thing, shares the page with it instead. Two
@@ -675,6 +760,12 @@ def compose(selected, page_w, page_h, margin=16.0, gutter=2.5,
         for count in range(run, 1, -1):
             group = queue[:count]
             for template in BY_COUNT.get(count, []):
+                # Stacked insets side by side must be different pictures;
+                # two frames of one moment stacked read as a mistake.
+                if template == "inset_two" and any(
+                        _similar(a, b, same_scene_seconds, same_scene_bits)
+                        for i, a in enumerate(group) for b in group[i + 1:]):
+                    continue
                 slots, cost = _page_cost(group, template, page_w, page_h,
                                          margin, gutter, min_dpi, bleed_mm,
                                          bleed_grid=bleed_grid)
@@ -684,6 +775,13 @@ def compose(selected, page_w, page_h, margin=16.0, gutter=2.5,
                 # page collapses to a single picture. Raise multi_photo_bias in
                 # album.json for a denser book, lower it for one per page.
                 cost -= multi_photo_bias * (count - 1)
+                # Photos laid over a full-page photo, favoured by page styles
+                # that are built around them.
+                if TEMPLATES[template].get("style") == "overlap":
+                    cost -= overlap_bonus
+                # A wide shot beside a close one tells more than two alike.
+                if pacing:
+                    cost -= 0.15 * (len(set(shot_type(p) for p in group)) - 1)
                 if cost < best[2]:
                     best = (template, slots, cost)
 
@@ -702,8 +800,195 @@ def compose(selected, page_w, page_h, margin=16.0, gutter=2.5,
         del queue[:used]
         index += 1
         multi += 1
+        last_busy = used >= 3
 
     return pages
+
+
+def shot_type(p):
+    """scene, wide, medium or close - from how big the largest face is."""
+    m = p.scores or {}
+    if not m.get("faces", 0):
+        return "scene"
+    largest = m.get("face_largest", 0.0)
+    return "wide" if largest < 0.02 else "medium" if largest < 0.10 else "close"
+
+
+OPENER_GAP_SECONDS = 90 * 60   # a break in shooting this long starts a chapter
+OPENER_KM = 5.0                # ...or a move this far
+OPENER_EVERY_PAGES = 12        # at most one opener per this many pages
+OPENER_MIN_PHOTOS = 4          # a chapter needs this many photos to open
+
+
+def plan_openers(selected, page_w, page_h, target_pages, min_dpi=MIN_DPI,
+                 place_of=None, when_of=None):
+    """Choose the chapters that deserve an opening page, and their photos.
+
+    Only real breaks count - a long pause in shooting or a move to another
+    place - and only the strongest few, so the book is not padded. Each
+    opener is the chapter's widest establishing shot that can fill a page:
+    nobody (or hardly anybody) in it, big enough and sharp enough.
+    `place_of(photos)` names the chapter; `when_of(photo)` gives a date line.
+    Returns {id(photo): (title, subtitle)}.
+    """
+    chapters = []
+    for p in selected:
+        if not chapters or chapters[-1][0] != p.segment:
+            chapters.append((p.segment, []))
+        chapters[-1][1].append(p)
+
+    def centre(photos):
+        pts = [p.gps for p in photos if getattr(p, "gps", None)]
+        if not pts:
+            return None
+        return (sorted(x[0] for x in pts)[len(pts) // 2],
+                sorted(x[1] for x in pts)[len(pts) // 2])
+
+    breaks = []
+    for i in range(1, len(chapters)):
+        prev, cur = chapters[i - 1][1], chapters[i][1]
+        gap = 0.0
+        if prev[-1].taken and cur[0].taken:
+            gap = (cur[0].taken - prev[-1].taken).total_seconds()
+        a, b = centre(prev), centre(cur)
+        km = _km(a, b) if a and b else 0.0
+        if gap < OPENER_GAP_SECONDS and km < OPENER_KM:
+            continue
+        # A chapter of one or two photos is an interlude, not a new part.
+        if len(cur) < OPENER_MIN_PHOTOS:
+            continue
+        # The establishing shot: fits a full page, fewest people in it, and
+        # a colourful scene - a grey frame with nobody in it is as likely to
+        # be a photographed receipt as a view.
+        fits = [p for p in cur
+                if (p.scores or {}).get("colorfulness", 0.0) >= 0.45
+                and max_printable(p, min_dpi)[0] >= page_w * 0.99
+                and max_printable(p, min_dpi)[1] >= page_h * 0.99
+                and crop_loss(p, Slot(0, 0, page_w, page_h)) <= BLEED_MAX_CROP_LOSS]
+        if not fits:
+            continue
+        shot = min(fits, key=lambda p: ((p.scores or {}).get("face_area", 0.0),
+                                        -p.score))
+        strength = gap / 3600.0 + km / 5.0
+        breaks.append((strength, i, shot, cur))
+
+    keep = max(1, int(target_pages // OPENER_EVERY_PAGES))
+    out, taken = {}, []
+    for _, i, shot, cur in sorted(breaks, key=lambda t: -t[0]):
+        if len(taken) >= keep:
+            break
+        title = (place_of(cur) if place_of else "") or ""
+        # The same town opening two chapters close together reads as a
+        # repeat, not a new part of the story.
+        if title and any(t == title and abs(j - i) <= 3 for j, t in taken):
+            continue
+        # Two openers in neighbouring chapters would sit back to back.
+        if any(abs(j - i) <= 1 for j, _t in taken):
+            continue
+        taken.append((i, title))
+        out[id(shot)] = (title, when_of(cur[0]) if when_of else "")
+    return out
+
+
+def _km(a, b):
+    lat1, lon1, lat2, lon2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = (math.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+    return 6371.0 * 2 * math.asin(min(1.0, math.sqrt(h)))
+
+
+SMALL_SHARE = 0.45      # a photo that cannot fill more of a page than this
+
+
+def _is_small(p, page_w, page_h, margin, min_dpi):
+    """Too few sharp pixels to fill a page: it would sit tiny in the middle."""
+    w, h = max_printable(p, min_dpi)
+    uw, uh = page_w - 2 * margin, page_h - 2 * margin
+    a = p.aspect or 1.0
+    # The largest box of its own shape that fits both the page and its pixels.
+    bw = min(w, uw, uh * a, h * a)
+    return (bw * bw / a) < SMALL_SHARE * uw * uh
+
+
+def _small_row(queue, page_w, page_h, margin, gutter, min_dpi, index):
+    """Two or three small photos side by side, each as large as it can print.
+
+    A lone small photo leaves a page mostly empty paper; a row of them at one
+    height reads as a deliberate little sequence.
+    """
+    group = []
+    for p in queue[:3]:
+        if not _is_small(p, page_w, page_h, margin, min_dpi) or p.hero:
+            break
+        group.append(p)
+    if len(group) < 2:
+        return None
+    uw, uh = page_w - 2 * margin, page_h - 2 * margin
+    h = min(uh, min(max_printable(p, min_dpi)[1] for p in group),
+            min(max_printable(p, min_dpi)[0] / (p.aspect or 1.0) for p in group))
+    widths = [h * (p.aspect or 1.0) for p in group]
+    total = sum(widths) + gutter * (len(group) - 1)
+    if total > uw:
+        k = uw / total
+        h, widths = h * k, [w * k for w in widths]
+        total = uw
+    x = (page_w - total) / 2.0
+    y = (page_h - h) / 2.0
+    slots = []
+    for p, w in zip(group, widths):
+        s = Slot(x, y, w, h, fixed=True)
+        s.photo = p
+        s.effective_dpi = effective_dpi(p, s)
+        s.crop_loss = crop_loss(p, s)
+        p.used_slot = s
+        slots.append(s)
+        x += w + gutter
+    return Page(index, "small_row", slots)
+
+
+DETAIL_LOOKAHEAD = 10    # how far ahead a detail page may gather from
+DETAIL_TEMPLATES = {4: ["four_grid", "four_band", "four_left", "four_right"],
+                    3: ["three_row", "big_left", "big_right", "big_top"]}
+
+
+def _is_detail(p):
+    """Nobody in it, colourful, and not one of the album's best singles."""
+    m = p.scores or {}
+    return (not p.hero and m.get("faces", 0) == 0
+            and m.get("colorfulness", 0.0) >= 0.40)
+
+
+def _detail_page(queue, page_w, page_h, margin, gutter, min_dpi, bleed_mm,
+                 index, seconds, bits):
+    """3-4 people-free photos from the head's chapter on one calm grid.
+
+    Gathers only from the next few photos of the same chapter, so the book
+    stays in order, and never puts two frames of one thing side by side.
+    """
+    head = queue[0]
+    group = []
+    for p in queue[:DETAIL_LOOKAHEAD]:
+        if p.segment != head.segment or not _is_detail(p):
+            continue
+        if any(_similar(p, g, seconds // 5, bits - 6) for g in group):
+            continue
+        group.append(p)
+        if len(group) == 4:
+            break
+    if len(group) < 3:
+        return None
+    best = (None, None, float("inf"))
+    for count in (len(group), 3):
+        for template in DETAIL_TEMPLATES[count]:
+            slots, cost = _page_cost(group[:count], template, page_w, page_h,
+                                     margin, gutter, min_dpi, bleed_mm)
+            if slots is not None and cost - 0.3 * count < best[2]:
+                best = (template, slots, cost - 0.3 * count)
+        if best[0]:
+            break
+    if best[0] is None:
+        return None
+    return Page(index, best[0], best[1], kind="detail")
 
 
 def stats(pages):

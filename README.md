@@ -26,7 +26,8 @@ Words after the event name are read as a spec, in any order: a paper size
 (`a4 a3 a5 letter legal square8 square10 square12 8x8 10x10 12x12 6x4 7x5`),
 an orientation (`portrait landscape auto`), a page count (`35pages`, `35`), a
 look (`natural vivid warm film mono soft crisp golden`, or `autolook` to
-choose one per chapter), a density (`tight` or `airy`), a cover
+choose one per chapter), a genre (`wedding travel zine`), a page style
+(`paper blended floating bordered`), a density (`tight` or `airy`), a cover
 design (`classic strips collage split duotone frame`) or a resolution
 (`200dpi`). Anything it does not recognise it tells you about
 instead of ignoring. `--spec "A4 landscape 35pages"` does the same thing.
@@ -78,6 +79,10 @@ The first photo named is the featured one: the whole cover in `classic`,
 order written, and the tool fills any bars left over. For the multi-photo
 designs you can list several: they are used first, and the tool fills the
 rest.
+
+A photo named in `cover.txt` goes on the cover even when the album itself
+leaves it out (for example, as a near-duplicate of a frame it prints). It is
+not forced into the pages; also list it in `keep.txt` if you want it there.
 
 `cover.txt` exists because choosing a cover means judging whether a picture
 *represents* the trip, and nothing measurable separates a temple from a
@@ -149,9 +154,45 @@ than fighting the settings — they always win.
    consecutive chapters don't repeat the same look. `mono` is only used when
    asked for.
 
-Pages alternate between mosaics that bleed off all four paper edges — the
-dominant look in printed wedding albums, and the one the reference spreads in
-`refs/` use — and bordered clusters, so the book has a rhythm.
+Pages follow what current wedding and travel album designers do
+(MILK, Artifact Uprising, Graphistudio and others):
+
+- **Curated pages.** One to three photos a page, one clearly leading. "Too
+  many photos per page" is the most common amateur mistake, so the 4- and
+  6-photo grids are kept for detail pages only.
+- **Paper, not white.** Each page is a flat paper tone taken from its own
+  photos: a faint warm cream beside sunsets, a cool grey beside the sea, and
+  near-black on night pages. Photos have crisp edges. There are no drop
+  shadows or blurred photo backgrounds, which designers now call dated.
+- **One gap and one margin** across the whole book (`page_gap_mm`,
+  `page_margin_mm`).
+- **Photo on photo.** A small photo laid over a full-page one, on the
+  quietest part of the picture, with a hairline paper edge. Sometimes two,
+  stacked, when they show different things.
+- **Pacing.** A busy page is always followed by a calm one. Photos with
+  nobody in them are gathered into small **detail pages** between the
+  people pages, and small photos that cannot fill a page share one in a
+  row instead of floating alone.
+- **Chapter openers.** Where shooting stops for more than 90 minutes or
+  moves more than 5 km, the chapter opens with a full-page establishing shot
+  and the town's name across it. At most one opener per 12 pages, and never
+  the same town twice in a row.
+- **A route map** after the cover when the photos carry GPS and the trip
+  has three or more stops. It is drawn from the photos alone, with no map
+  tiles and no internet.
+- **Black and white, mixed in.** About 10% of photos (`mono_share`), a
+  whole page at a time so they are never beside colour ones. The pages
+  chosen are those where colour helps least, and people pages. The black
+  and white is high-contrast, with rich blacks.
+
+Other page styles: `blended` (edge to edge, photos cross-fading into each
+other), `floating` (soft shadows over a blurred wash) and `bordered` (white
+margins and gaps, the old look).
+
+Genre presets set several of these at once: `wedding` (more black and
+white, no map), `travel` (map and openers) and `zine` (film look, a quarter
+black and white, tighter spacing). Anything else in the same command wins
+over the preset, e.g. `./make-album "Trip" travel vivid`.
 
 Where a photo carries GPS, the page names the place ("Bangkok, Thailand"),
 resolved against a 34,000-entry city list bundled in `models/`. Nothing is
@@ -175,8 +216,13 @@ The ones worth knowing:
 | `print_sharpness` | `normal` | `strict`, `normal` or `off` - how soft a photo may be at full size before it is printed smaller |
 | `multi_photo_bias` | 0.9 | higher = more photos per page |
 | `fill_crop_budget` | 0.52 | higher = fuller pages, less white space, more of each photo trimmed |
-| `margin_mm` / `gutter_mm` | 16 / 2.5 | wide page margin, tight gaps between photos — the printed-album look |
-| `bleed_multi_every` | 2 | every Nth multi-photo page runs edge to edge (1 = all, 0 = none) |
+| `page_style` | `paper` | `paper` (tinted paper, curated pages), `blend`, `float` or `bordered` |
+| `page_gap_mm` / `page_margin_mm` | 5 / 14 | the one gap and one margin used on paper pages |
+| `mono_share` | 0.10 | share of photos printed black and white, a page at a time (0 = none) |
+| `chapter_openers` | true | opening pages at real breaks in the day |
+| `route_map` | true | a map of the trip after the cover when photos have GPS |
+| `margin_mm` / `gutter_mm` | 16 / 2.5 | page margin and gaps for `bordered` pages |
+| `bleed_multi_every` | 2 | `bordered` only: every Nth multi-photo page runs edge to edge (1 = all, 0 = none) |
 | `captions` | `place` | `off`, `date`, `place` (nothing without GPS), or `auto` |
 | `scenic_share` | 0.28 | album share reserved for places, objects and views (`--scenic`) |
 | `max_per_scene` | 2 | how many frames one location may contribute |
