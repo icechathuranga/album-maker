@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Make short vertical videos (TikTok, Reels, Shorts) from an event folder.
+#
+#   ./make-reel "Trip"                  one new video (a new random edit each run)
+#   ./make-reel "Trip" --variants 4     four previews + index.html to compare them
+#   ./make-reel "Trip" --seed N --final re-make the one you liked, full quality
+#   ./make-reel --list                  videos, photos and music in each folder
+#
+# Uses the bundled vendor/ libraries, so there is nothing to activate.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from photoalbum.reel.cli import main; sys.exit(main())' "$HERE" "$@"

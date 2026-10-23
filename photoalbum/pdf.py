@@ -11,7 +11,7 @@ import shutil
 import tempfile
 
 from .deps import np, cv2, Image, ImageDraw, ImageFont, ImageFilter, HAS_REPORTLAB
-from . import ingest, enhance, crop, cover as covers, faces as facedet, places
+from . import ingest, enhance, crop, cover as covers, faces as facedet, places, fonts
 from .layout import Slot
 
 if HAS_REPORTLAB:
@@ -73,15 +73,8 @@ def _register_display_fonts():
                 except Exception:
                     pass
         return fallback
-    tt = "/usr/share/fonts/truetype/"
-    serif = first("AlbumSerif", [tt + "fonts-yrsa-rasa/Yrsa-Regular.ttf",
-                                 tt + "liberation2/LiberationSerif-Regular.ttf",
-                                 tt + "liberation/LiberationSerif-Regular.ttf",
-                                 tt + "dejavu/DejaVuSerif.ttf"], "Times-Roman")
-    light = first("AlbumLight", [tt + "ubuntu/Ubuntu-L.ttf",
-                                 tt + "dejavu/DejaVuSans-ExtraLight.ttf",
-                                 tt + "liberation2/LiberationSans-Regular.ttf"],
-                  "Helvetica")
+    serif = first("AlbumSerif", fonts.SERIF, "Times-Roman")
+    light = first("AlbumLight", fonts.LIGHT, "Helvetica")
     return serif, light
 
 

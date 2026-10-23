@@ -244,6 +244,102 @@ and `album.json` record which moments were covered. On a 556-photo folder, 24
 pages held 119 of 267 moments; 75 pages held 182. Raising the page count is a
 far more effective lever than adjusting any scoring weight.
 
+## Short videos: make-reel
+
+The same event folder can also become a vertical video for TikTok, Reels or
+Shorts (1080×1920, 30 fps, H.264/AAC, −14 LUFS) - by default a 3-minute
+film of the event, told in the order it happened.
+
+```bash
+./make-reel "Trip"                        # one new edit (a new seed every run)
+./make-reel "Trip" --variants 4           # four different previews + index.html
+./make-reel "Trip" --seed 48213 --final   # re-make the one you liked, full quality
+./make-reel "Trip" 90s                    # length: 90s, 2m, 1m30s, or --duration 120
+./make-reel "Trip" places soft            # steer it in words
+./make-reel --list                        # videos, photos and music per folder
+```
+
+Put phone videos (`.mp4 .mov .m4v .3gp .webm .mkv`) beside the photos in
+`inbox/<Event>/`, and your own music (`.mp3 .m4a .wav .flac`) in `music/`
+next to the tool or in the event folder; nothing is downloaded, and
+`music/` is kept out of git. List clips you do not want in the event's
+`skip.txt`, as for the album. The analysis of the footage is cached in
+`cache/reels/<Event>/` (safe to delete), so clearing `outbox/` never costs a
+re-analysis.
+
+### How it edits
+
+The rules follow how a professional editor cuts a travel or event film:
+
+- **The story in order.** Every clip moment and photo appears in capture
+  order. The film opens on an **establishing shot** - early in the first
+  part of the day, nobody close, calm and sharp - held 4-6 s with the title,
+  placed away from any faces. It **closes** on the widest shot of the last
+  part, with a fade. A small "DAY 2 · TOWN · 10 OCTOBER" caption and a dip
+  mark each new day.
+- **Every part of the day gets its share.** Screen time is divided between
+  the chapters of the event, no chapter above 30%, so one long activity
+  cannot swallow the mornings. A chapter of photos only becomes a short
+  photo montage. When there is too much material, the middle is thinned by
+  score; the end of the trip is never cut off.
+- **Long recordings as beginning, middle and end.** A long clip gives its
+  first good wide shot, its moment of most action and its loudest moment
+  (a cheer rather than talk) - three to five moments by length - and
+  similar clips filmed within ten minutes count as one scene.
+- **Shot choice.** Static talking heads are marked down, and so is soft
+  1080p landscape footage. Shake is measured at the full frame rate: very
+  shaky moments are left out, mildly shaky ones stabilised (ffmpeg
+  vidstab). Never three close-ups or four people-less shots in a row.
+- **Rhythm.** About 2.2-3 s a shot for a 3-minute film (about 1-1.3 s for a
+  30-second one), faster in busy chapters and slower at the start and end,
+  with a held "breath" shot about every 35 s. Shots start just before the
+  action. Long empty stretches can run at double speed, and one fast moment
+  from 50-60 fps footage at half speed.
+- **Music.** Tempo and beats are found offline; every cut lands on a beat,
+  the film is a whole number of 16-beat phrases, and the music fades over
+  its last two seconds on a phrase boundary.
+- **Sound mixed like an editor.** Each clip is levelled on its own and the
+  low rumble removed; clips cross-fade over 0.3 s; the next shot's voice or
+  cheer can start early (a J-cut); under a photo the previous clip's sound
+  carries on quietly (an L-cut). Music dips gently under kept natural sound.
+  Loudness is set in two passes, so it does not pump.
+- **Framing for vertical.** The 9:16 window keeps the main person in frame
+  for the whole shot and follows them smoothly; scenery from landscape
+  clips drifts slowly across. Photos drift 4-8%, never a fast zoom.
+- **Colour per chapter**, all from one family of looks, so cuts inside a
+  scene match and night is not graded like day; brightness and white
+  balance matched within each chapter.
+- **Transitions:** hard cuts. A dip only where the day changes, a dissolve
+  only between two photos (`soft`), nothing at all with `clean`.
+
+### Variants
+
+Every run picks a **seed**; the same seed always gives the same edit, saved
+as `<Event>-s<seed>.recipe.json` beside the video in `outbox/<Event>/reels/`.
+What a seed varies: the **emphasis** - `people` (people moments first, more
+photos), `places` (scenery and wide shots first), `balanced` (every part of
+the day equally) or `footage` (time by how much was filmed) - plus pacing,
+colour family, transitions, which moments are used, one chapter in black
+and white, and where in the music the film starts. `--variants N` gives each
+version a different emphasis, and `index.html` shows them side by side with
+the command to re-make each one.
+
+### Limits
+
+- 1080p landscape footage cropped to vertical is upscaled about 1.8× and
+  looks a little soft; 4K or portrait footage stays sharp.
+- Cheering and speech are found from loudness and voice frequencies, which
+  is crude.
+- The tool cannot tell what a clip is about: a pre-trip office call scores
+  like any other face. `skip.txt` is the answer.
+- The same seed always gives the same recipe; an `.mp4` can differ in a few
+  bytes between machines.
+- Requires ffmpeg (`sudo apt install ffmpeg`).
+
+`tools/make_testreel.py` builds a synthetic test folder of phone-like clips
+(rotated, HDR, variable frame rate, a cut inside a clip, a shaky clip) and a
+120 BPM track, in `inbox/_selftest-reel/`.
+
 ## Requirements
 
 Python 3.10+. The libraries live in `vendor/` and the face model in

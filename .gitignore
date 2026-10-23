@@ -10,3 +10,9 @@ vendor/
 
 __pycache__/
 *.pyc
+
+# Your music library for make-reel (keep copyrighted tracks out of git)
+music/
+
+# make-reel analysis cache (safe to delete; rebuilt on the next run)
+cache/
