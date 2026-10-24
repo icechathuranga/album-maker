@@ -329,6 +329,17 @@ def prune(work_dir, keep_since, limit=WORK_LIMIT):
     return freed
 
 
+def clean(work_dir):
+    """Delete the whole scratch folder. Returns the bytes freed."""
+    import shutil
+    if not os.path.isdir(work_dir):
+        return 0
+    size = sum(os.path.getsize(os.path.join(d, f))
+               for d, _s, fs in os.walk(work_dir) for f in fs)
+    shutil.rmtree(work_dir, ignore_errors=True)
+    return size
+
+
 def strip(video, out_jpg, frames=8, height=240):
     """A row of frames across the video, for the comparison page."""
     info = ffm.probe_json(video)

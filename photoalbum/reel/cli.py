@@ -266,9 +266,13 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
         if recipe_file:
             break
     if not dry_run:
-        freed = render.prune(work, run_started)
+        # Rendered shots are only scratch: once the videos are written they
+        # are deleted, so finished runs leave nothing behind but the outputs
+        # and the small footage analysis in cache/reels/.
+        freed = render.clean(work)
         if verbose and freed:
-            print("  cleaned %.1f GB of old cached shots" % (freed / 1e9))
+            print("  cleaned %s of temporary render files" % (
+                "%.1f GB" % (freed / 1e9) if freed >= 1e9 else "%d MB" % (freed / 1e6)))
         page = sheet.write(out_dir, event)
         if verbose:
             print("  compare: %s" % page)
