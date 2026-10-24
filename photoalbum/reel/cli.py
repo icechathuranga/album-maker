@@ -17,7 +17,7 @@ import time
 
 from .. import cli as album_cli, colour, cover, enhance, faces, ingest, places
 from ..deps import report as deps_report, np
-from . import editor, ffm, moments, render, sheet, sources, beats, thumbs
+from . import editor, ffm, moments, render, sheet, sources, beats, thumbs, musicfit
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
 WORDS_PACING = set(editor.PACING)
@@ -52,12 +52,21 @@ def _music_analysis(path, cache_dir):
 
 
 def _length(word):
-    """'90s', '3m', '2min', '1m30s', '2.5m' -> seconds, else None."""
+    """'90s', '3m', '2min', '1m30s', '2.5m', '2:56', '2m56' -> seconds, else None."""
+    word = word.strip().lower()
+    mm = re.fullmatch(r"(\d+):(\d{1,2})", word) or re.fullmatch(r"(\d+)m(\d{1,2})", word)
+    if mm:
+        secs = int(mm.group(1)) * 60 + int(mm.group(2))
+        return secs if 5 <= secs <= 1800 else None
     m = re.fullmatch(r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins))?(?:(\d+)\s*s(?:ec)?)?", word)
     if not m or not (m.group(1) or m.group(2)):
         return None
     secs = float(m.group(1) or 0) * 60 + float(m.group(2) or 0)
     return int(round(secs)) if 5 <= secs <= 1800 else None
+
+
+def _mmss(t):
+    return "%d:%04.1f" % (int(t // 60), t % 60)
 
 
 def parse_words(words):
@@ -78,6 +87,8 @@ def parse_words(words):
             opts["order"] = low
         elif low in enhance.LOOKS or low == "auto":
             opts["look"] = low
+        elif low in ("colour", "color", "nomono", "no-mono"):
+            opts["no_mono"] = True
         elif low in ("nomusic", "no-music"):
             opts["no_music"] = True
         elif low in ("final", "preview"):
@@ -225,6 +236,18 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                 if music_files:
                     path = editor.stream(s, "music").choice(music_files)
                     a = _music_analysis(path, cache)
+                    if a and opts.get("music_until"):
+                        # Stop the song at the time asked for and, if the
+                        # video runs longer, repeat its last section to fill.
+                        path, fit = musicfit.extend(
+                            path, a, opts["music_until"],
+                            opts.get("duration") or opts["music_until"], cache)
+                        a = _music_analysis(path, cache)
+                        if verbose and _attempt == 0:
+                            print("  music: cut at %s on the beat, then a %d-beat section "
+                                  "from %s repeats (one-beat crossfades)" % (
+                                      _mmss(fit["cut"]), fit["loop_beats"],
+                                      _mmss(fit["loop_start"])))
                     if a:
                         track = {"path": path, "rel": os.path.relpath(path, root), "analysis": a}
                 recipe = editor.build(event, title, subtitle, found, s, opts, music=track,
@@ -300,7 +323,11 @@ def main(argv=None):
     ap.add_argument("--duration", help="target length: 180, 90s, 3m, 1m30s "
                     "(default 3 minutes, or as long as the footage allows)")
     ap.add_argument("--music", help="use this music file")
+    ap.add_argument("--music-until", help="stop the music here (e.g. 2:56); if the "
+                    "video is longer, its last section before this point repeats")
     ap.add_argument("--no-music", action="store_true", help="keep the clips' own sound")
+    ap.add_argument("--no-mono", action="store_true",
+                    help="all in colour: never turn a chapter black and white")
     ap.add_argument("--look", choices=sorted(list(enhance.LOOKS) + ["auto"]))
     ap.add_argument("--recipe", help="render this .recipe.json again")
     ap.add_argument("--dry-run", action="store_true", help="choose the edit, do not render")
@@ -349,8 +376,18 @@ def main(argv=None):
         opts["duration"] = secs
     if args.music:
         opts["music"] = os.path.abspath(args.music)
+    if args.music_until:
+        secs = _length(args.music_until) or (int(args.music_until)
+                                             if args.music_until.isdigit() else None)
+        if not secs:
+            print("could not read --music-until %r (try 2:56 or 176)" % args.music_until,
+                  file=sys.stderr)
+            return 2
+        opts["music_until"] = secs
     if args.no_music:
         opts["no_music"] = True
+    if args.no_mono:
+        opts["no_mono"] = True
     if args.look:
         opts["look"] = args.look
 

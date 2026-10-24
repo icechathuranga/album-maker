@@ -89,7 +89,10 @@ def choose_style(seed, sources, opts):
         else stream(seed, "fx").choice(TRANSITIONS)
     style["family"] = stream(seed, "family").choice(sorted(FAMILIES))
     style["look"] = opts.get("look") if opts.get("look") not in (None, "auto") else "auto"
-    style["mono_chapter"] = style["look"] == "auto" and stream(seed, "mono").random() < 0.35
+    # The random draw is always made, so --no-mono changes nothing else in
+    # the edit: the same seed gives the same film, only all in colour.
+    mono_draw = stream(seed, "mono").random() < 0.35
+    style["mono_chapter"] = style["look"] == "auto" and mono_draw and not opts.get("no_mono")
     style["photo_share"] = {"people": 0.30, "places": 0.15}.get(
         style["emphasis"], round(stream(seed, "photos").uniform(0.15, 0.25), 2))
     return style
@@ -484,7 +487,7 @@ def _on_beats(items, style, seed, music):
     energy = music.get("energy", [1.0] * len(beats))
     starts = [b for b in range(down, len(beats), 4)
               if b + total < len(beats) and energy[b] >= 0.5 * max(energy)]
-    if whole:
+    if whole or style.get("from_start"):
         start = down
     else:
         start = stream(seed, "music-start").choice(starts) if starts else down
@@ -659,6 +662,8 @@ def build(event, title, subtitle, moments, seed, opts, music=None,
     else:
         style = choose_style(seed, sources, opts)
         style["exact"] = bool(opts.get("duration"))
+        # A song cut at a chosen point plays from its beginning.
+        style["from_start"] = bool(opts.get("music_until"))
 
     by_seg = {}
     for m in moments:

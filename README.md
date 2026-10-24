@@ -259,6 +259,8 @@ the frame: cut on whole beats, the last shot trimmed to fit.
 ./make-reel "Trip" --seed 48213 --final   # re-make the one you liked, full quality
 ./make-reel "Trip" 90s                    # length: 90s, 2m, 1m30s, or --duration 120
 ./make-reel "Trip" places soft            # steer it in words
+./make-reel "Trip" --duration 4m --music-until 2:56
+                                          # song to 2:56, then its last section repeats to 4:00
 ./make-reel --list                        # videos, photos and music per folder
 ```
 
@@ -306,6 +308,12 @@ The rules follow how a professional editor cuts a travel or event film:
 - **Music.** Tempo and beats are found offline; every cut lands on a beat,
   the film is a whole number of 16-beat phrases, and the music fades over
   its last two seconds on a phrase boundary.
+- **Fitting a song to the video.** `--music-until 2:56` stops the song at
+  the nearest bar line before 2:56. If the video is longer (`--duration
+  4m`), the song's last 32 beats before that point repeat to fill it, each
+  join a one-beat equal-power crossfade on the beat, so the phrase comes
+  round again rather than cutting; the cuts follow the beat across the
+  joins, and the music fades out over the last two seconds.
 - **Sound mixed like an editor.** Each clip is levelled on its own and the
   low rumble removed; clips cross-fade over 0.3 s; the next shot's voice or
   cheer can start early (a J-cut); under a photo the previous clip's sound
@@ -345,7 +353,8 @@ photos), `places` (scenery and wide shots first), `balanced` (every part of
 the day equally) or `footage` (time by how much was filmed), drawn from
 the seed alone so `--seed N` always re-makes the same edit - plus pacing,
 colour family, transitions, which moments are used, one chapter in black
-and white, and where in the music the film starts. `--variants N` gives each
+and white (`--no-mono` or the word `colour` keeps everything in colour),
+and where in the music the film starts. `--variants N` gives each
 version a different emphasis, and `index.html` shows them side by side with
 the command to re-make each one.
 
