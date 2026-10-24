@@ -214,13 +214,18 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
         else:
             s = _seed_for(seed, i)
             for _attempt in range(25):
+                # Cheap check first: a variant should put something else first.
+                used = {m[1]["style"].get("emphasis") for m in made}
+                if len(used) < len(editor.EMPHASES) and not opts.get("emphasis") and \
+                        editor.choose_style(s, [], opts)["emphasis"] in used:
+                    s = (s * 31 + 17) & 0x7fffffff
+                    continue
                 track = None
                 if music_files:
                     path = editor.stream(s, "music").choice(music_files)
                     a = _music_analysis(path, cache)
                     if a:
                         track = {"path": path, "rel": os.path.relpath(path, root), "analysis": a}
-                opts["avoid_emphasis"] = {m[1]["style"].get("emphasis") for m in made}
                 recipe = editor.build(event, title, subtitle, found, s, opts, music=track,
                                       frame_at=frame_at, photo_rgb=photo_rgb)
                 if all(_differs(recipe, m[1]) for m in made) or not made:

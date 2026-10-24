@@ -82,16 +82,16 @@ def choose_style(seed, sources, opts):
     style["pacing"] = opts.get("pacing") if opts.get("pacing") in pacings \
         else stream(seed, "pacing").choice(pacings)
     style["cut"] = CUT["long" if long_reel else "short"][style["pacing"]]
-    avoid = set(opts.get("avoid_emphasis", ()))
-    choices = [e for e in EMPHASES if e not in avoid] or list(EMPHASES)
-    style["emphasis"] = opts.get("emphasis") or stream(seed, "emphasis").choice(choices)
+    # From the seed alone, so `--seed N` always re-makes the same edit;
+    # --variants finds seeds whose emphases differ rather than forcing one.
+    style["emphasis"] = opts.get("emphasis") or stream(seed, "emphasis").choice(EMPHASES)
     style["transitions"] = opts.get("transitions") if opts.get("transitions") in TRANSITIONS \
         else stream(seed, "fx").choice(TRANSITIONS)
     style["family"] = stream(seed, "family").choice(sorted(FAMILIES))
     style["look"] = opts.get("look") if opts.get("look") not in (None, "auto") else "auto"
     style["mono_chapter"] = style["look"] == "auto" and stream(seed, "mono").random() < 0.35
-    style["photo_share"] = {"people": 0.35, "places": 0.20}.get(
-        style["emphasis"], round(stream(seed, "photos").uniform(0.22, 0.32), 2))
+    style["photo_share"] = {"people": 0.30, "places": 0.15}.get(
+        style["emphasis"], round(stream(seed, "photos").uniform(0.15, 0.25), 2))
     return style
 
 
@@ -126,7 +126,9 @@ def _budgets(chapters, duration, emphasis):
     if emphasis == "footage":
         w = [c.footage + 2.0 * c.photos for c in chapters]
     else:
-        w = [math.sqrt(len(c.moments)) for c in chapters]
+        # How much the chapter holds, with video counting for what it is: a
+        # minute of footage weighs as much as four photos.
+        w = [math.sqrt(len(c.moments) + c.footage / 15.0) for c in chapters]
     total = sum(w) or 1.0
     alloc = [duration * x / total for x in w]
     cap = CHAPTER_CAP * duration
@@ -172,7 +174,8 @@ def _scenes(chapter):
     secs = {}
     for c in clips_:
         secs[scene_of[id(c)]] = secs.get(scene_of[id(c)], 0.0) + c.duration
-    caps = {s: int(min(6, 3 + v // 180)) for s, v in secs.items()}
+    # A long continuous scene can give many shots: one per minute filmed.
+    caps = {s: int(min(16, 3 + v // 60)) for s, v in secs.items()}
     return scene_of, caps
 
 
@@ -214,7 +217,12 @@ def _select(chapter, style, rnd):
                 return False
         return True
 
-    ranked = sorted(chapter.moments, key=lambda m: -(_value(m, style) + jitter[id(m)]))
+    # Video first: clip moments fill the chapter's time before any photo is
+    # considered, so long recordings are used as fully as they allow.
+    ranked = (sorted([m for m in chapter.moments if m.kind == "clip"],
+                     key=lambda m: -(_value(m, style) + jitter[id(m)])) +
+              sorted([m for m in chapter.moments if m.kind == "photo"],
+                     key=lambda m: -(_value(m, style) + jitter[id(m)])))
     for relax in (False, True):
         if relax:
             max_photos[0] = len(chapter.moments)
@@ -278,6 +286,8 @@ def _tidy(seq, chapter_of, keep):
 
     def photo_run_limit(m):
         clips_, photos_ = in_seq[id(chapter_of[id(m)])]
+        if photos_ >= 3 * clips_:
+            return 10 ** 6          # essentially a photo montage
         return 5 if photos_ > clips_ else 3
 
     def weakest(run):
@@ -364,20 +374,26 @@ def _lengths(seq, chapters_of, style, seed, opener, closer):
         drop = min(cands, key=lambda x: x[0].score)
         out.remove(drop)
         total -= drop[1]
-    # Too short: let clips run longer, but no longer than the pacing allows.
+    # Too short: let clips run longer, then photos, but no longer than the
+    # pacing allows - the film should fill its length (a whole song) if the
+    # footage can, without any shot outstaying its welcome.
     room = style["duration"] - total
-    while room > 0.2:
-        grew = 0.0
-        for x in out:
-            m, d, sp = x
-            if m.kind == "clip" and m is not opener and m is not closer:
-                step = min(0.5, m.span / sp - d, max_cut - d, room - grew)
+    photo_max = 3.5 if style["pacing"] == "cinematic" else 3.0
+    for kind in ("clip", "photo"):
+        while room > 0.2:
+            grew = 0.0
+            for x in out:
+                m, d, sp = x
+                if m.kind != kind or m is opener or m is closer:
+                    continue
+                cap = (min(m.span / sp, max_cut) if kind == "clip" else photo_max)
+                step = min(0.5, cap - d, room - grew)
                 if step > 0:
                     x[1] += step
                     grew += step
-        if grew <= 0:
-            break
-        room -= grew
+            if grew <= 0:
+                break
+            room -= grew
     return out
 
 
@@ -399,8 +415,15 @@ def _on_beats(items, style, seed, music):
         ks.append(k)
     keep = [(x, k) for x, k in zip(items, ks) if k]
     total = sum(k for _, k in keep)
-    # Whole phrases: the music then ends where it naturally resolves.
-    target = max(16, int(round(total / 16.0)) * 16)
+    down = music.get("downbeat", 0)
+    whole = style.get("whole_song")
+    if whole:
+        # The whole song from its first downbeat: as many beats as the song
+        # has, or as many as the footage can fill.
+        target = min(total, len(beats) - 1 - down)
+    else:
+        # Whole phrases: the music then ends where it naturally resolves.
+        target = max(16, int(round(total / 16.0)) * 16)
     i = len(keep) - 1
     while total != target and keep:
         (m, d, sp), k = keep[i]
@@ -415,10 +438,12 @@ def _on_beats(items, style, seed, music):
             continue
         i = i - 1 if i > 0 else len(keep) - 1
     energy = music.get("energy", [1.0] * len(beats))
-    down = music.get("downbeat", 0)
     starts = [b for b in range(down, len(beats), 4)
               if b + total < len(beats) and energy[b] >= 0.5 * max(energy)]
-    start = stream(seed, "music-start").choice(starts) if starts else down
+    if whole:
+        start = down
+    else:
+        start = stream(seed, "music-start").choice(starts) if starts else down
     if start + total >= len(beats):
         start = max(0, len(beats) - 1 - total)
     t0 = beats[start]
@@ -429,8 +454,17 @@ def _on_beats(items, style, seed, music):
         f1 = int(round((beats[b1] - t0) * FPS))
         out.append((m, max(1, f1 - f0) / float(FPS), sp))
         b = b1
+    fade = 2.0
+    if whole and out and b >= len(beats) - 1:
+        # The footage reaches the end of the song: hold the last shot through
+        # the song's own ending rather than fading it out early.
+        tail = max(0.0, music["duration"] - beats[-1] - 0.05)
+        m, d, sp = out[-1]
+        if m.kind == "photo" or (m.span / sp) >= d + tail:
+            out[-1] = (m, (_frames(d + tail)) / float(FPS), sp)
+            fade = 0.5
     plan = {"offset": round(t0, 3), "bpm": music["bpm"], "beats": total,
-            "fade": 2.0}
+            "fade": fade, "whole_song": bool(whole)}
     return out, plan
 
 
@@ -565,7 +599,15 @@ def build(event, title, subtitle, moments, seed, opts, music=None,
     frame_at(clip, t) -> RGB frame; photo_rgb(photo) -> (RGB, face boxes).
     """
     sources = list({id(m.src): m.src for m in moments}.values())
-    style = choose_style(seed, sources, opts)
+    if music and not opts.get("duration"):
+        # With music and no length asked for, the film is the whole song.
+        a = music["analysis"]
+        song = a["duration"] - a["beats"][a.get("downbeat", 0)]
+        opts = dict(opts, duration=round(song, 1))
+        style = choose_style(seed, sources, opts)
+        style["whole_song"] = True
+    else:
+        style = choose_style(seed, sources, opts)
 
     by_seg = {}
     for m in moments:

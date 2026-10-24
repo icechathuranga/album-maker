@@ -89,9 +89,11 @@ def goodness(tl):
 
 
 def _cap(duration):
-    """How many moments a clip of this length may give: three, plus one per
-    three minutes of footage, at most five - and fewer for short clips."""
-    return int(min(5, 3 + duration // 180, 1 + duration // 20))
+    """How many moments a clip of this length may give. Long recordings are
+    the richest material, so they give the most: three, plus one for every
+    45 seconds, up to twelve (a 6-minute clip gives eleven) - and fewer for
+    short clips. Moments stay at least 20 s apart and visually distinct."""
+    return int(min(12, 3 + duration // 45, 1 + duration // 20))
 
 
 def _candidates(clip, g, bad, t, gap):

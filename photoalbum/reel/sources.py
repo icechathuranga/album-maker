@@ -18,6 +18,9 @@ def _photo_cache(cache_dir, p):
     return os.path.join(cache_dir, hashlib.sha1(key.encode()).hexdigest() + ".json")
 
 
+REEL_MIN_DETAIL = 120.0   # tile Laplacian variance (80th pct) at analysis size
+
+
 def photos(event_dir, album_json, cache_dir, skip=(), keep=()):
     """Photos fit for a reel, with .score, .scores and .dhash set."""
     found, _skipped = ingest.scan(event_dir)
@@ -67,7 +70,31 @@ def photos(event_dir, album_json, cache_dir, skip=(), keep=()):
         dedupe.group(out)
         out = [p for p in out if p.status not in ("rejected", "duplicate", "unreadable")
                or p.name.lower() in keep]
-    return out
+    # Blurred photos never go in. Without an album the album's own softness
+    # rules have not run, so apply them here; and a reel needs a little more:
+    # a landscape photo shown vertically uses only a third of its width, so
+    # one that is sharp only at half size or less goes soft on the screen.
+    sharp = []
+    for p in out:
+        if p.name.lower() in keep:
+            sharp.append(p)
+            continue
+        why = curate._too_soft(p, curate.SHARPNESS_FLOOR, curate.FACE_SHARPNESS_FLOOR)
+        s = p.scores or {}
+        # Motion blur smears the whole frame, so even its most detailed parts
+        # carry little fine detail. On this trip's 293 photos every blurred
+        # one measured under 90 and every good one 140 or more.
+        if not why and s.get("raw_laplacian_var", 1e9) < REEL_MIN_DETAIL:
+            why = "blurred (too little fine detail anywhere)"
+        if not why and (s.get("sharp_scale", 1.0) <= 0.25 or
+                        (p.width > p.height and s.get("sharp_scale", 1.0) < 0.5)):
+            why = "too soft to fill a phone screen"
+        if why:
+            p.status = "rejected"
+            p.reasons.append(why)
+        else:
+            sharp.append(p)
+    return sharp
 
 
 def clips(event_dir, cache_dir, progress=None, skip=(), dropped=None):

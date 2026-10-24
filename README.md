@@ -247,8 +247,10 @@ far more effective lever than adjusting any scoring weight.
 ## Short videos: make-reel
 
 The same event folder can also become a vertical video for TikTok, Reels or
-Shorts (1080×1920, 30 fps, H.264/AAC, −14 LUFS) - by default a 3-minute
-film of the event, told in the order it happened.
+Shorts (1080×1920, 30 fps, H.264/AAC, −14 LUFS), told in the order it
+happened. With music it runs the length of the whole song, from its first
+beat (or as long as the footage can fill); without music, 3 minutes. A
+length you give (`90s`, `2m`, `--duration 120`) always wins.
 
 ```bash
 ./make-reel "Trip"                        # one new edit (a new seed every run)
@@ -282,12 +284,15 @@ The rules follow how a professional editor cuts a travel or event film:
   cannot swallow the mornings. A chapter of photos only becomes a short
   photo montage. When there is too much material, the middle is thinned by
   score; the end of the trip is never cut off.
-- **Long recordings as beginning, middle and end.** A long clip gives its
-  first good wide shot, its moment of most action and its loudest moment
-  (a cheer rather than talk) - three to five moments by length - and
-  similar clips filmed within ten minutes count as one scene.
-- **Shot choice.** Static talking heads are marked down, and so is soft
-  1080p landscape footage. Shake is measured at the full frame rate: very
+- **Long recordings used to the full.** A long clip gives its first good
+  wide shot, its moment of most action and its loudest moment (a cheer
+  rather than talk), then more of its best moments - three, plus one per
+  45 seconds, up to twelve - at least 20 s apart and visually distinct.
+  Each chapter fills its time with video first and photos after.
+- **Shot choice.** Blurred photos are left out: the album's softness
+  rules, plus a check for motion blur (too little fine detail anywhere in
+  the frame) and for photos too soft to fill a phone screen. Static talking
+  heads are marked down, and so is soft 1080p landscape footage. Shake is measured at the full frame rate: very
   shaky moments are left out, mildly shaky ones stabilised (ffmpeg
   vidstab). Never three close-ups or four people-less shots in a row.
 - **Rhythm.** About 2.2-3 s a shot for a 3-minute film (about 1-1.3 s for a
@@ -318,7 +323,8 @@ Every run picks a **seed**; the same seed always gives the same edit, saved
 as `<Event>-s<seed>.recipe.json` beside the video in `outbox/<Event>/reels/`.
 What a seed varies: the **emphasis** - `people` (people moments first, more
 photos), `places` (scenery and wide shots first), `balanced` (every part of
-the day equally) or `footage` (time by how much was filmed) - plus pacing,
+the day equally) or `footage` (time by how much was filmed), drawn from
+the seed alone so `--seed N` always re-makes the same edit - plus pacing,
 colour family, transitions, which moments are used, one chapter in black
 and white, and where in the music the film starts. `--variants N` gives each
 version a different emphasis, and `index.html` shows them side by side with
