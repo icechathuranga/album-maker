@@ -115,6 +115,7 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
     cache = os.path.join(root, "cache", "reels", event)
     work = os.path.join(out_dir, "work")
     os.makedirs(out_dir, exist_ok=True)
+    run_started = time.time() - 1
     keep, skip = sources.read_lists(event_dir)
 
     prog = album_cli.Progress("watching", 1, verbose)
@@ -265,6 +266,9 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
         if recipe_file:
             break
     if not dry_run:
+        freed = render.prune(work, run_started)
+        if verbose and freed:
+            print("  cleaned %.1f GB of old cached shots" % (freed / 1e9))
         page = sheet.write(out_dir, event)
         if verbose:
             print("  compare: %s" % page)

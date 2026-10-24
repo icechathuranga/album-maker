@@ -250,6 +250,7 @@ def render(recipe, event_dir, sources, out_path, work_dir, profile="preview",
                 _render_clip(seg, src, tmp, prof, cube_for(look), work_dir)
                 os.replace(tmp, out)
         prev_key = key
+        os.utime(out)               # mark as used, so pruning keeps it
         parts.append(out)
         if progress:
             progress(i + 1, len(recipe["segments"]), seg["src"])
@@ -300,6 +301,32 @@ def render(recipe, event_dir, sources, out_path, work_dir, profile="preview",
             "-movflags", "+faststart", out_path]
     ffm.run(cmd)
     return out_path
+
+
+WORK_LIMIT = 2 * 1024 ** 3     # bytes of cached shots kept between runs
+
+
+def prune(work_dir, keep_since, limit=WORK_LIMIT):
+    """Keep the scratch folder small: when it holds more than `limit`, delete
+    the cached files not used since `keep_since` (oldest first) until it is
+    back under. Files the last run used are always kept."""
+    if not os.path.isdir(work_dir):
+        return 0
+    files = []
+    for name in os.listdir(work_dir):
+        path = os.path.join(work_dir, name)
+        if os.path.isfile(path):
+            st = os.stat(path)
+            files.append((st.st_mtime, st.st_size, path))
+    total = sum(f[1] for f in files)
+    freed = 0
+    for mtime, size, path in sorted(files):
+        if total <= limit or mtime >= keep_since:
+            break
+        os.remove(path)
+        total -= size
+        freed += size
+    return freed
 
 
 def strip(video, out_jpg, frames=8, height=240):
