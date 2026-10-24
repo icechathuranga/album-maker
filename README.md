@@ -269,7 +269,8 @@ next to the tool or in the event folder; nothing is downloaded, and
 `skip.txt`, as for the album. The analysis of the footage is cached in
 `cache/reels/<Event>/` (safe to delete), so clearing `outbox/` never costs a
 re-analysis. Rendered shots are temporary: they are written to
-`outbox/<Event>/reels/work/` during a run and deleted when it finishes.
+`outbox/<Event>/reels/work/` during a run and deleted when it finishes,
+and a final render also deletes the event's preview videos.
 
 ### How it edits
 

@@ -270,6 +270,13 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
         # are deleted, so finished runs leave nothing behind but the outputs
         # and the small footage analysis in cache/reels/.
         freed = render.clean(work)
+        if profile == "final":
+            # A final means a version was chosen: the previews made to choose
+            # it are no longer needed.
+            import glob
+            for path in glob.glob(os.path.join(out_dir, "*-preview.*")):
+                freed += os.path.getsize(path)
+                os.remove(path)
         if verbose and freed:
             print("  cleaned %s of temporary render files" % (
                 "%.1f GB" % (freed / 1e9) if freed >= 1e9 else "%d MB" % (freed / 1e6)))
