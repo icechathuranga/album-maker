@@ -250,7 +250,8 @@ The same event folder can also become a vertical video for TikTok, Reels or
 Shorts (1080×1920, 30 fps, H.264/AAC, −14 LUFS), told in the order it
 happened. With music it runs the length of the whole song, from its first
 beat (or as long as the footage can fill); without music, 3 minutes. A
-length you give (`90s`, `2m`, `--duration 120`) always wins.
+length you give (`90s`, `2m`, `--duration 178`) always wins and is met to
+the frame: cut on whole beats, the last shot trimmed to fit.
 
 ```bash
 ./make-reel "Trip"                        # one new edit (a new seed every run)
@@ -316,6 +317,22 @@ The rules follow how a professional editor cuts a travel or event film:
   balance matched within each chapter.
 - **Transitions:** hard cuts. A dip only where the day changes, a dissolve
   only between two photos (`soft`), nothing at all with `clean`.
+
+### Cover images
+
+Every video comes with two cover images beside it:
+
+| File | Size | For |
+|---|---|---|
+| `<video>.youtube.jpg` | 1280×720 | the YouTube thumbnail |
+| `<video>.cover.jpg` | 1080×1920 | the cover frame on TikTok, Reels, Shorts |
+
+They use the album's poster cover - full-height strips edge to edge with the
+title in spaced capitals - built from the reel's own photos and from sharp
+frames of its video shots, in the order they happened. Scenes and action
+(the place, the jeep, the shrine) are preferred over people's close-ups,
+and frames with large featureless patches are skipped. `index.html` shows
+both under each video, ready to download.
 
 ### Variants
 

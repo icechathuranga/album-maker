@@ -20,6 +20,7 @@ from . import analyse
 MIN_SPAN = 0.75          # seconds; anything shorter is not a moment
 PEAK_GAP = 2.0           # seconds between two moments of a short clip
 LONG_GAP = 20.0          # ...and of a long one
+SPAN_REACH = 5.0         # a moment reaches at most this far either side of its peak
 SKIP_HEAD = 0.3          # the first instant of a clip is usually a fumble
 SHAKE_FULL = 0.02        # jitter (share of width) that counts as full shake
 OWN_TWIN_BITS = 14       # two moments of one clip must differ at least this much
@@ -114,6 +115,13 @@ def _candidates(clip, g, bad, t, gap):
             lo -= 1
         while hi + 1 < n and not bad[hi + 1] and smooth[hi + 1] >= floor and (hi + 1) not in cuts:
             hi += 1
+        # A moment is its own few seconds, not the whole good stretch round
+        # it: otherwise several moments of a long steady recording share one
+        # span and end up cut from the same footage.
+        while t[lo] < t[i] - SPAN_REACH and lo < i:
+            lo += 1
+        while t[hi] > t[i] + SPAN_REACH and hi > i:
+            hi -= 1
         lo_t, hi_t = t[lo], min(clip.duration - 0.1, t[hi] + step)
         if hi_t - lo_t < MIN_SPAN:
             continue

@@ -34,6 +34,7 @@ font-size:12px;overflow-x:auto;white-space:nowrap}
 
 CARD = """<div class="card"><video src="%(video)s" controls preload="metadata" playsinline></video>
 <img src="%(strip)s" alt="frames from seed %(seed)s" loading="lazy">
+%(thumbs)s
 <div class="seed">seed %(seed)s%(quality)s</div><div class="sum">%(summary)s</div>
 <code>./make-reel "%(event)s" --seed %(seed)s --final</code></div>"""
 
@@ -54,7 +55,13 @@ def write(reels_dir, event):
             "strip": html.escape(os.path.basename(base + ".strip.jpg")),
             "seed": r["seed"], "event": html.escape(event),
             "quality": " · preview" if base.endswith("-preview") else "",
-            "summary": html.escape(editor.summary(r))})
+            "summary": html.escape(editor.summary(r)),
+            "thumbs": "".join(
+                '<a href="%s" download><img src="%s" alt="%s" loading="lazy"></a>' % (
+                    html.escape(os.path.basename(t)), html.escape(os.path.basename(t)), label)
+                for t, label in ((base + ".youtube.jpg", "YouTube thumbnail"),
+                                 (base + ".cover.jpg", "vertical cover"))
+                if os.path.exists(t))})
     out = os.path.join(reels_dir, "index.html")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(PAGE % {"event": html.escape(event), "count": len(cards),

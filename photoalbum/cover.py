@@ -451,7 +451,9 @@ def _strips(W, H, hero, pool, ctx):
     # Fewer, wider strips rather than repeating a moment: a small folder may
     # not have six distinct ones. Photos named in cover.txt are the user's
     # call and never count against this.
-    for n in range(5 if W <= H else 6, 3, -1):
+    most = ctx.get("strips") or (5 if W <= H else 6)
+    fewest = min(3, most) if ctx.get("strips") else 4
+    for n in range(most, fewest - 1, -1):
         photos = pick_set(pool, n, (W / float(n)) / H,
                           first=hero if named else None, named=named,
                           gap_seconds=ctx["gap"], striking=1.0,
@@ -462,7 +464,7 @@ def _strips(W, H, hero, pool, ctx):
                     for b in photos[i + 1:] if a in auto or b in auto)
         if len(photos) == n and not clash:
             break
-    if len(photos) < 4:
+    if len(photos) < fewest:
         return None
 
     # Full height, edge to edge: no gutter, no band, nothing white.
@@ -618,7 +620,7 @@ def display_title(title):
 
 
 def compose(style, hero, pool, page_w, page_h, dpi, look="vivid", named=(),
-            gap_seconds=240, src=None):
+            gap_seconds=240, src=None, strips=None):
     """Build the cover picture. Returns (PIL image, text layout, style used).
 
     A multi-photo style without enough photos quietly becomes `classic`.
@@ -627,7 +629,8 @@ def compose(style, hero, pool, page_w, page_h, dpi, look="vivid", named=(),
     # Headroom over the page's long edge: a wide photo on a tall page is
     # cropped to a sliver of its width, and that sliver still has to fill it.
     src = src or _Source(int(max(W, H) * 1.5))
-    ctx = {"src": src, "look": look, "named": list(named), "gap": gap_seconds}
+    ctx = {"src": src, "look": look, "named": list(named), "gap": gap_seconds,
+           "strips": strips}
     builder = _BUILDERS.get(style, _BUILDERS[DEFAULT_STYLE])
     out = builder(W, H, hero, list(pool), ctx)
     if out is None:

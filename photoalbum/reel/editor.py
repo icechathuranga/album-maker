@@ -397,6 +397,46 @@ def _lengths(seq, chapters_of, style, seed, opener, closer):
     return out
 
 
+REUSE_GAP = 1.0     # seconds of clip that must separate two shots of it
+
+
+def _start(m, d, sp):
+    """Where in the clip a shot starts: just before the action."""
+    need = d * sp
+    a = m.action if m.action is not None else m.centre
+    return min(max(a - 0.4, m.lo), max(m.lo, m.hi - need))
+
+
+def _no_reuse(items, keep):
+    """Never show the same footage twice. Each clip shot claims the stretch
+    of the clip it plays (padded a little for later beat-fitting); a shot
+    that would overlap one already placed moves to its own centre, and is
+    dropped if that still overlaps."""
+    used, out = {}, []
+    for x in items:
+        m, d, sp = x
+        if m.kind != "clip":
+            out.append(x)
+            continue
+        need = d * sp * 1.25 + REUSE_GAP
+        spans = used.setdefault(id(m.src), [])
+
+        def free(a):
+            return all(a + need <= s0 or a >= s1 for s0, s1 in spans)
+
+        start = _start(m, d, sp)
+        if not free(start):
+            alt = min(max(m.centre - need / 2, m.lo), max(m.lo, m.hi - d * sp))
+            if free(alt):
+                m.action = alt + 0.4          # the shot now starts here
+                start = alt
+            elif id(m) not in keep:
+                continue
+        spans.append((start, start + need))
+        out.append(x)
+    return out
+
+
 def _on_beats(items, style, seed, music):
     """Fit shot lengths to whole beats, the film to whole 16-beat phrases,
     and start the music on a downbeat with room for all of it."""
@@ -421,6 +461,10 @@ def _on_beats(items, style, seed, music):
         # The whole song from its first downbeat: as many beats as the song
         # has, or as many as the footage can fill.
         target = min(total, len(beats) - 1 - down)
+    elif style.get("exact"):
+        # A length was asked for: as many whole beats as it holds; the last
+        # shot is then trimmed to the exact frame.
+        target = int(math.ceil(style["duration"] / period))
     else:
         # Whole phrases: the music then ends where it naturally resolves.
         target = max(16, int(round(total / 16.0)) * 16)
@@ -455,6 +499,12 @@ def _on_beats(items, style, seed, music):
         out.append((m, max(1, f1 - f0) / float(FPS), sp))
         b = b1
     fade = 2.0
+    if style.get("exact") and out:
+        total_s = sum(x[1] for x in out)
+        over = total_s - style["duration"]
+        if over > 0:
+            m, d, sp = out[-1]
+            out[-1] = (m, _frames(d - over) / float(FPS), sp)
     if whole and out and b >= len(beats) - 1:
         # The footage reaches the end of the song: hold the last shot through
         # the song's own ending rather than fading it out early.
@@ -608,6 +658,7 @@ def build(event, title, subtitle, moments, seed, opts, music=None,
         style["whole_song"] = True
     else:
         style = choose_style(seed, sources, opts)
+        style["exact"] = bool(opts.get("duration"))
 
     by_seg = {}
     for m in moments:
@@ -642,6 +693,7 @@ def build(event, title, subtitle, moments, seed, opts, music=None,
     seq = _tidy(seq, chapter_of, keep)
 
     items = _lengths(seq, chapter_of, style, seed, opener, closer)
+    items = _no_reuse(items, keep)
     if music:
         timed, music_plan = _on_beats(items, style, seed, music["analysis"])
     else:
@@ -657,11 +709,8 @@ def build(event, title, subtitle, moments, seed, opts, music=None,
         bright[id(c)] = float(np.median(vals)) if vals else None
 
     # Frames for every crop, fetched together (each is a seek into a 4K file).
-    def clip_start(m, d, sp):
-        need = d * sp
-        a = m.action if m.action is not None else m.centre
-        # Cut just before the action, so the shot opens on the build-up.
-        return min(max(a - 0.4, m.lo), max(m.lo, m.hi - need))
+    # Cut just before the action, so the shot opens on the build-up.
+    clip_start = _start
 
     if frame_at is not None and hasattr(frame_at, "prefetch"):
         frame_at.prefetch([(m.src, clip_start(m, d, sp) + d * sp / 2)

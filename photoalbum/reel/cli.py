@@ -17,7 +17,7 @@ import time
 
 from .. import cli as album_cli, colour, cover, enhance, faces, ingest, places
 from ..deps import report as deps_report, np
-from . import editor, ffm, moments, render, sheet, sources, beats
+from . import editor, ffm, moments, render, sheet, sources, beats, thumbs
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
 WORDS_PACING = set(editor.PACING)
@@ -253,8 +253,14 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                           progress=lambda d, n, nm: (setattr(p, "n", d - 1), p.step(1, nm)))
             p.done()
             render.strip(base + ".mp4", base + ".strip.jpg")
+            covers = thumbs.make(recipe, by_rel, base, title, subtitle,
+                                 look=recipe["style"].get("look", "natural")
+                                 if recipe["style"].get("look") != "auto" else "natural",
+                                 cache_dir=cache)
             if verbose:
                 print("  -> %s  (%.0fs)" % (base + ".mp4", time.time() - t0))
+                for c in covers:
+                    print("     %s" % c)
         made.append((s, recipe))
         if recipe_file:
             break
