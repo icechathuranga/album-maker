@@ -126,6 +126,9 @@ def make(recipe, sources, out_base, title, subtitle, look="natural", cache_dir=N
         img, text, _style = cover.compose("strips", hero, used, W, H, 25.4, look=look,
                                           strips=STRIPS[name])
         y = 1.0 - text.get("y", 0.6) if text else 0.4
+        # A wider, deeper shade behind the whole title block, so the date
+        # line stays readable over a white building or sky.
+        img = cover._title_band(img, y + 0.04, spread=0.20, strength=0.45, edge=0.0)
         layer = titles.render(title, subtitle, W, H, y=y)
         img = Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB")
         path = "%s.%s.jpg" % (out_base, name)

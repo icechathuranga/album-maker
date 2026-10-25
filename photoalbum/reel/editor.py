@@ -205,6 +205,9 @@ def _select(chapter, style, rnd):
     goal = chapter.budget * 1.2
 
     def ok(m):
+        # Too dark to read on a phone, unless the chapter has nothing else.
+        if m.bright < DARK and any(x.bright >= DARK for x in chapter.moments):
+            return False
         if m.kind == "clip":
             if m.shake is not None and m.shake > 0.02:
                 return False
@@ -264,13 +267,25 @@ def _opener(chapter, style):
     return max(clips_ or early, key=lambda m: m.score)
 
 
-def _closer(chapter, style):
-    """The widest shot late in the last chapter - a calm way out."""
-    late = chapter.moments[-max(1, int(math.ceil(len(chapter.moments) * 0.4))):]
-    good = [m for m in late if not m.low_res and (m.shake is None or m.shake <= 0.02)]
-    wides = [m for m in good if m.wide]
-    pool = wides or good or late
-    return max(pool, key=lambda m: m.score)
+CLOSER_BRIGHT = 80.0      # a closing shot must be clearly visible
+DARK = 70.0               # shots darker than this read as black on a phone
+
+
+def _closer(chapters, style):
+    """A strong, calm last image: bright, sharp, steady - a photo, a group or
+    open scenery rather than a close-up of hands. Looked for late in the last
+    chapter, then the one before, so the film never ends on whatever the last
+    minutes of filming happened to be (a night repair under a jeep, say)."""
+    for chapter in chapters[::-1][:2]:
+        late = chapter.moments[-max(1, int(math.ceil(len(chapter.moments) * 0.5))):]
+        good = [m for m in late if not m.low_res and m.bright >= CLOSER_BRIGHT
+                and m.sharp >= 0.5 and (m.shake is None or m.shake <= 0.02)]
+        if good:
+            return max(good, key=lambda m: m.score + (0.15 if m.kind == "photo" else 0.0)
+                       + (0.1 if m.faces >= 3 or (m.kind == "photo" and m.faces == 0)
+                          else 0.0))
+    late = chapters[-1].moments[-max(1, int(math.ceil(len(chapters[-1].moments) * 0.4))):]
+    return max(late, key=lambda m: m.score)
 
 
 def _tidy(seq, chapter_of, keep):
@@ -645,12 +660,46 @@ def _town(items):
     return max(sorted(set(names)), key=names.count) if names else ""
 
 
+REUSE_SAME = 0.30     # score taken off a moment another video already shows
+REUSE_CLIP = 0.06     # ...and off other moments of a clip another video used
+
+
+def _used_penalty(m, used):
+    """How much another video of this event already shows this moment."""
+    spans = used.get(m.src.rel)
+    if not spans:
+        return 0.0
+    if m.kind == "photo":
+        return REUSE_SAME
+    if any(a < m.hi + 1.0 and b > m.lo - 1.0 for a, b in spans):
+        return REUSE_SAME
+    return REUSE_CLIP
+
+
 def build(event, title, subtitle, moments, seed, opts, music=None,
-          frame_at=None, photo_rgb=None):
+          frame_at=None, photo_rgb=None, used=None):
     """Return the recipe dict for this seed.
 
     frame_at(clip, t) -> RGB frame; photo_rgb(photo) -> (RGB, face boxes).
+    `used` maps a source's rel path to the [(in, out)] spans other videos of
+    the event already show; those moments are marked down so each video
+    favours fresh footage. Scores are restored before returning.
     """
+    used = used or {}
+    saved = [(m, m.score) for m in moments]
+    for m in moments:
+        m.score = m.score - _used_penalty(m, used)
+    try:
+        recipe = _build(event, title, subtitle, moments, seed, opts, music,
+                        frame_at, photo_rgb)
+    finally:
+        for m, s in saved:
+            m.score = s
+    recipe["avoided"] = {k: [list(x) for x in v] for k, v in sorted(used.items())}
+    return recipe
+
+
+def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_rgb):
     sources = list({id(m.src): m.src for m in moments}.values())
     if music and not opts.get("duration"):
         # With music and no length asked for, the film is the whole song.
@@ -683,7 +732,7 @@ def build(event, title, subtitle, moments, seed, opts, music=None,
     for c in real:
         chosen.extend(_select(c, style, pick))
     opener = _opener(real[0], style)
-    closer = _closer(real[-1], style) if len(real) > 1 or len(real[0].moments) > 1 else None
+    closer = _closer(real, style) if len(real) > 1 or len(real[0].moments) > 1 else None
     if closer is opener:
         closer = None
     for m in (opener, closer):
@@ -841,7 +890,8 @@ def build(event, title, subtitle, moments, seed, opts, music=None,
         "output": {"fps": FPS, "duration": total},
         "style": style,
         "overlays": overlays,
-        "audio": ({"mode": "music", "music": music["rel"], **music_plan}
+        "audio": ({"mode": "music", "music": music["rel"],
+                   "song": music.get("song", music["rel"]), **music_plan}
                   if music and music_plan else {"mode": "original"}),
         "segments": segments,
     }

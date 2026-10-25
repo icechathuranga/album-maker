@@ -98,6 +98,57 @@ def parse_words(words):
     return opts, unknown
 
 
+def _spans(recipe):
+    out = {}
+    for g in recipe.get("segments", []):
+        out.setdefault(g["src"], []).append(
+            (g.get("in", 0.0), g.get("out", 0.0)) if g["kind"] == "clip" else (0.0, 0.0))
+    return out
+
+
+def _previous_song(out_dir, seed, root):
+    """The music file an existing recipe for this seed used, if still there."""
+    import glob
+    for path in glob.glob(os.path.join(out_dir, "*-s%d*.recipe.json" % seed)):
+        with open(path) as fh:
+            r = json.load(fh)
+        song = (r.get("audio") or {}).get("song") or (r.get("audio") or {}).get("music")
+        if r.get("seed") == seed and song:
+            full = os.path.join(root, song)
+            # A fitted (cut and repeated) track lives in the cache; the song
+            # it was made from is recorded beside it.
+            if os.path.exists(full) and "/cache/" not in full:
+                return full
+    return None
+
+
+def _used_by_others(out_dir, seed, made):
+    """Footage the event's other videos already show, so this one can avoid it.
+
+    Re-making a seed that already has a recipe reuses what that recipe
+    avoided, so `--seed N` always gives the same edit.
+    """
+    import glob
+    mine = [p for p in glob.glob(os.path.join(out_dir, "*-s%d*.recipe.json" % seed))]
+    for path in mine:
+        with open(path) as fh:
+            r = json.load(fh)
+        if r.get("seed") == seed and "avoided" in r:
+            return {k: [tuple(x) for x in v] for k, v in r["avoided"].items()}
+    used = {}
+    others = []
+    for path in glob.glob(os.path.join(out_dir, "*.recipe.json")):
+        with open(path) as fh:
+            r = json.load(fh)
+        if r.get("seed") != seed:
+            others.append(r)
+    others += [m[1] for m in made if m[1].get("seed") != seed]
+    for r in others:
+        for k, v in _spans(r).items():
+            used.setdefault(k, []).extend(v)
+    return used
+
+
 def _seed_for(base, i):
     return base if i == 0 else (base * 1000003 + i * 7919) & 0x7fffffff
 
@@ -226,6 +277,7 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
         else:
             s = _seed_for(seed, i)
             for _attempt in range(25):
+                shown = _used_by_others(out_dir, s, made)
                 # Cheap check first: a variant should put something else first.
                 used = {m[1]["style"].get("emphasis") for m in made}
                 if len(used) < len(editor.EMPHASES) and not opts.get("emphasis") and \
@@ -235,6 +287,12 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                 track = None
                 if music_files:
                     path = editor.stream(s, "music").choice(music_files)
+                    # Re-making a seed keeps the song its recipe used, even if
+                    # more songs have been added since; --music still wins.
+                    prev = _previous_song(out_dir, s, root)
+                    if prev and not opts.get("music"):
+                        path = prev
+                    song_path = path
                     a = _music_analysis(path, cache)
                     if a and opts.get("music_until"):
                         # Stop the song at the time asked for and, if the
@@ -249,8 +307,10 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                                       _mmss(fit["cut"]), fit["loop_beats"],
                                       _mmss(fit["loop_start"])))
                     if a:
-                        track = {"path": path, "rel": os.path.relpath(path, root), "analysis": a}
+                        track = {"path": path, "rel": os.path.relpath(path, root), "analysis": a,
+                                 "song": os.path.relpath(song_path, root)}
                 recipe = editor.build(event, title, subtitle, found, s, opts, music=track,
+                                      used=shown,
                                       frame_at=frame_at, photo_rgb=photo_rgb)
                 if all(_differs(recipe, m[1]) for m in made) or not made:
                     break

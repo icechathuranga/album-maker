@@ -31,7 +31,8 @@ WIDE = 0.02              # ...below this (or no face) is a wide shot
 class Moment:
     __slots__ = ("kind", "src", "centre", "lo", "hi", "score", "people", "motion",
                  "loud", "onset", "speech", "sharp", "segment", "hash", "taken",
-                 "faces", "largest", "tag", "shake", "action", "low_res", "colour")
+                 "faces", "largest", "tag", "shake", "action", "low_res", "colour",
+                 "bright")
 
     def __init__(self, kind, src):
         self.kind, self.src = kind, src
@@ -49,6 +50,7 @@ class Moment:
         self.action = None           # time of the strongest action, for the cut
         self.low_res = False
         self.colour = 0.5
+        self.bright = 128.0          # mean brightness 0-255
 
     @property
     def span(self):
@@ -146,6 +148,10 @@ def _make(clip, tl, g, people, motion, loud, i, lo, hi, lo_t, hi_t):
     m.speech = float(speech[core].mean())
     m.sharp = float(np.array(tl["sharp"])[core].mean())
     m.colour = float(np.array(tl["colour"])[core].mean())
+    # The darker of the peak second and the whole span: a moment of light in
+    # a night drive still plays mostly in the dark.
+    span_b = np.array(tl["bright"])[lo:hi + 1]
+    m.bright = float(min(np.array(tl["bright"])[core].mean(), np.median(span_b)))
     m.faces = int(max(tl["faces"][lo:hi + 1]))
     m.largest = float(max(tl["largest"][lo:hi + 1]))
     m.hash = tl["hash"][i]
@@ -223,6 +229,7 @@ def photo_moment(photo):
     m.largest = s.get("face_largest", 0.0)
     m.colour = s.get("colorfulness", 0.5)
     m.sharp = s.get("sharpness", 1.0)
+    m.bright = s.get("mean_brightness", 128.0)
     m.shake = 0.0
     return m
 
