@@ -89,7 +89,7 @@ def _render_clip(seg, clip, out, prof, cube, work):
     W, H = prof["size"]
     n = _n(seg)
     sp = seg.get("speed", 1.0)
-    x, y, w, h = seg.get("window") or _centre_window(clip.width, clip.height)
+    x, y, w, h = seg.get("window") or _centre_window(clip.width, clip.height, W / float(H))
     cw = ffm.even(min(clip.width, w * clip.width))
     ch = ffm.even(min(clip.height, h * clip.height))
     cx = int(min(max(0, x * clip.width), clip.width - cw))
@@ -102,15 +102,17 @@ def _render_clip(seg, clip, out, prof, cube, work):
     if stab:
         vf.append(stab.rstrip(","))
     vf += ["crop=%d:%d:%d:%d" % (cw, ch, cx, cy),
-           "scale=%d:%d:flags=lanczos" % (W, H), "setsar=1"] + _finish_filters(seg, cube)
+           "scale=%d:%d:flags=lanczos" % (W, H), "setsar=1",
+           # A clip shorter than its slot (one half of a pair, say) holds its
+           # last frame rather than leaving the shot short.
+           "tpad=stop_mode=clone:stop_duration=%.2f" % (n / float(FPS))] + _finish_filters(seg, cube)
     ffm.run(_encode_cmd(out, prof, n, ["-ss", "%.3f" % seg["in"],
                                        "-t", "%.3f" % (seg["out"] - seg["in"] + 0.2),
                                        "-i", clip.path],
                         "[0:v]%s[v]" % ",".join(vf)))
 
 
-def _centre_window(w, h):
-    aspect = 9.0 / 16.0
+def _centre_window(w, h, aspect=9.0 / 16.0):
     if w / float(h) > aspect:
         cw = h * aspect / w
         return [(1 - cw) / 2.0, 0.0, cw, 1.0]
@@ -144,7 +146,7 @@ def _render_clip_frames(seg, clip, out, prof, cube, work):
     output, then moved with sub-pixel accuracy."""
     W, H = prof["size"]
     n = _n(seg)
-    x, y, w, h = seg.get("window") or _centre_window(clip.width, clip.height)
+    x, y, w, h = seg.get("window") or _centre_window(clip.width, clip.height, W / float(H))
     scale = W / (w * clip.width)
     dw, dh = ffm.even(clip.width * scale), ffm.even(clip.height * scale)
     track = seg["track"]
@@ -180,8 +182,8 @@ def _photo_frames(seg, photo, prof):
     img, _ = enhance.apply(img, photo, enabled=True, look="natural")
     src = np.asarray(img.convert("RGB"), dtype=np.uint8)
     sh, sw = src.shape[:2]
-    kb = seg.get("kenburns") or {"start": _centre_window(sw, sh),
-                                 "end": _centre_window(sw, sh)}
+    kb = seg.get("kenburns") or {"start": _centre_window(sw, sh, W / float(H)),
+                                 "end": _centre_window(sw, sh, W / float(H))}
     a, b = np.array(kb["start"], float), np.array(kb["end"], float)
     for i in range(n):
         u = _ease(i / float(max(1, n - 1)))
@@ -210,10 +212,54 @@ def _render_photo(seg, photo, out, prof, cube, prev_last=None):
     return last
 
 
+SEAM = (18, 18, 20)       # colour of the frame behind a centred portrait shot
+
+
+def _render_one(seg, src, out, prof, cube, work):
+    tmp = out + ".part.mp4"
+    if seg["kind"] == "photo":
+        _render_photo(seg, src, tmp, prof, cube)
+    else:
+        _render_clip(seg, src, tmp, prof, cube, work)
+    os.replace(tmp, out)
+
+
+def _render_composite(seg, sources, out, prof, cube, work):
+    """Wide output only: two portrait shots side by side, or one portrait
+    shot centred on a dark frame."""
+    W, H = prof["size"]
+    n = _n(seg)
+    parts = []
+    if seg["kind"] == "pair":
+        half = dict(prof, size=(W // 2, H))
+        for k, h in enumerate(seg["halves"]):
+            p = out + ".half%d.mp4" % k
+            _render_one(h, sources[h["src"]], p, half, cube, work)
+            parts.append(p)
+        graph = "[0:v][1:v]hstack=inputs=2,setsar=1,format=yuv420p[v]"
+    else:
+        inner = dict(prof, size=(ffm.even(H * 9.0 / 16.0), H))
+        p = out + ".inner.mp4"
+        _render_one(seg, sources[seg["src"]], p, inner, cube, work)
+        parts.append(p)
+        graph = ("[0:v]pad=%d:%d:(ow-iw)/2:0:color=0x%02x%02x%02x,setsar=1,format=yuv420p[v]"
+                 % ((W, H) + SEAM))
+    inputs = []
+    for p in parts:
+        inputs += ["-i", p]
+    tmp = out + ".part.mp4"
+    ffm.run(_encode_cmd(tmp, prof, n, inputs, graph))
+    os.replace(tmp, out)
+    for p in parts:
+        os.remove(p)
+
+
 def render(recipe, event_dir, sources, out_path, work_dir, profile="preview",
            music_path=None, progress=None):
     """Render the recipe to out_path. `sources` maps rel path -> Clip/Photo."""
-    prof = PROFILES[profile]
+    prof = dict(PROFILES[profile])
+    if recipe["output"].get("aspect") == "wide":
+        prof["size"] = prof["size"][::-1]           # 1920 x 1080
     W, H = prof["size"]
     os.makedirs(work_dir, exist_ok=True)
     cubes = {}
@@ -225,6 +271,17 @@ def render(recipe, event_dir, sources, out_path, work_dir, profile="preview",
 
     parts, prev_photo_last, prev_key = [], None, None
     for i, seg in enumerate(recipe["segments"]):
+        if seg["kind"] == "pair" or seg.get("layout") == "pillar":
+            look = seg.get("look") or recipe["style"].get("look", "natural")
+            out = os.path.join(work_dir, "shot_%s.mp4" % _key(seg, profile, look, W, H, 3))
+            if not os.path.exists(out):
+                _render_composite(seg, sources, out, prof, cube_for(look), work_dir)
+            prev_photo_last, prev_key = None, None
+            os.utime(out)
+            parts.append(out)
+            if progress:
+                progress(i + 1, len(recipe["segments"]), seg["src"])
+            continue
         src = sources[seg["src"]]
         look = seg.get("look") or recipe["style"].get("look", "natural")
         dissolve = (seg.get("fx") or {}).get("in") == "dissolve"

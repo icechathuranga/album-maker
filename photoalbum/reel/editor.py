@@ -29,6 +29,8 @@ from . import reframe
 
 FPS = 30
 ASPECT = 9.0 / 16.0
+OUT_ASPECT = {"tall": 9.0 / 16.0, "wide": 16.0 / 9.0}
+HALF_ASPECT = 8.0 / 9.0       # one half of a 16:9 frame (960 x 1080)
 LONG_REEL = 60.0          # above this, only calm pacings
 DEFAULT_DURATION = 180.0  # seconds; as long as the footage allows, up to this
 # Average seconds a cut, by pacing, for short and for long reels. A three-
@@ -75,7 +77,7 @@ def _when(m):
 
 def choose_style(seed, sources, opts):
     """The big decisions, each overridable from the command line."""
-    style = {"order": "story"}
+    style = {"order": "story", "aspect": "wide" if opts.get("wide") else "tall"}
     style["duration"] = float(opts.get("duration") or DEFAULT_DURATION)
     long_reel = style["duration"] >= LONG_REEL
     pacings = sorted(CUT["long"] if long_reel else CUT["short"])
@@ -564,16 +566,17 @@ def _followed(tl, i0, i1):
     return out
 
 
-def span_window(clip, t0, t1, frame):
-    """A 9:16 window that keeps the main subject in frame for the whole shot,
-    not just its middle. Returns (window, last time the subject is seen)."""
+def span_window(clip, t0, t1, frame, aspect=ASPECT):
+    """A window of `aspect` (w/h; 9:16 by default) that keeps the main subject
+    in frame for the whole shot, not just its middle. Returns (window, last
+    time the subject is seen)."""
     tl = clip.timeline
     ts = tl["t"]
     i0 = min(range(len(ts)), key=lambda k: abs(ts[k] - t0))
     i1 = min(range(len(ts)), key=lambda k: abs(ts[k] - t1))
     faces = _followed(tl, i0, i1)
-    win_w = min(1.0, ASPECT * clip.height / float(clip.width))
-    win_h = min(1.0, clip.width / ASPECT / float(clip.height))
+    win_w = min(1.0, aspect * clip.height / float(clip.width))
+    win_h = min(1.0, clip.width / aspect / float(clip.height))
     seen = [f for f in faces if f]
     last_seen = None
     if seen:
@@ -583,7 +586,7 @@ def span_window(clip, t0, t1, frame):
         if frame is None:
             return [(1 - win_w) / 2, (1 - win_h) / 2, win_w, win_h], None
         h, w = frame.shape[:2]
-        return _norm_box(crop.find(frame, ASPECT, face_boxes=[], max_zoom_out=1.0), w, h), None
+        return _norm_box(crop.find(frame, aspect, face_boxes=[], max_zoom_out=1.0), w, h), None
 
     def best(axis_len, lo_key, size_key):
         grid = np.linspace(0, 1 - axis_len, 41)
@@ -607,10 +610,10 @@ def span_window(clip, t0, t1, frame):
     return [0.0, round(y, 4), 1.0, round(win_h, 4)], last_seen
 
 
-def photo_windows(rgb, boxes, zoom_in, amount):
+def photo_windows(rgb, boxes, zoom_in, amount, aspect=ASPECT):
     """Start and end windows for a gentle 4-8% drift in or out."""
     h, w = rgb.shape[:2]
-    x, y, bw, bh = _norm_box(crop.find(rgb, ASPECT, face_boxes=boxes, max_zoom_out=1.0), w, h)
+    x, y, bw, bh = _norm_box(crop.find(rgb, aspect, face_boxes=boxes, max_zoom_out=1.0), w, h)
     k = 1.0 - amount
     tight = [round(x + bw * (1 - k) / 2, 4), round(y + bh * (1 - k) / 2, 4),
              round(bw * k, 4), round(bh * k, 4)]
@@ -770,6 +773,42 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
         frame_at.prefetch([(m.src, clip_start(m, d, sp) + d * sp / 2)
                            for m, d, sp in timed if m.kind == "clip"])
 
+    # Shape of every shot. Vertical output: every shot fills the 9:16 frame.
+    # Wide (16:9) output: landscape footage fills it; two portrait shots in a
+    # row from one part of the day share it side by side, both playing for
+    # their combined time; a portrait shot with no partner stands in the
+    # middle of a dark frame rather than being cropped to a sliver.
+    layout = ["full"] * len(timed)
+    if style["aspect"] == "wide":
+        def upright(m):
+            return m.src.height > m.src.width
+
+        def day(m):
+            return m.taken.date() if m.taken else None
+        # A landscape shot between two portrait ones from the same part of
+        # the day trades places with the second, so the portraits can pair.
+        # Every length is whole beats, so the cuts stay on the beat.
+        for i in range(len(timed) - 2):
+            a_, b_, c_ = timed[i][0], timed[i + 1][0], timed[i + 2][0]
+            if upright(a_) and not upright(b_) and upright(c_) \
+                    and a_.segment == b_.segment == c_.segment and day(a_) == day(c_) \
+                    and b_ is not opener and c_ is not closer:
+                timed[i + 1], timed[i + 2] = timed[i + 2], timed[i + 1]
+        i = 0
+        while i < len(timed):
+            m = timed[i][0]
+            if upright(m):
+                n_ = timed[i + 1][0] if i + 1 < len(timed) else None
+                if n_ is not None and upright(n_) and n_.segment == m.segment \
+                        and day(n_) == day(m):
+                    layout[i], layout[i + 1] = "left", "right"
+                    i += 2
+                    continue
+                layout[i] = "pillar"
+            i += 1
+    slot_aspect = {"full": OUT_ASPECT[style["aspect"]], "left": HALF_ASPECT,
+                   "right": HALF_ASPECT, "pillar": ASPECT}
+
     kb = {c.seg: stream(seed, "drift:%s" % c.seg).random() < 0.6 for c in chapters}
     drift = stream(seed, "drift")
     segments, segments_taken, t = [], [], 0.0
@@ -777,24 +816,33 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
     overlays = []
     for i, (m, d, sp) in enumerate(timed):
         ch = chapter_of[id(m)]
+        shape = layout[i]
+        aspect = slot_aspect[shape]
+        # Each half of a pair plays for the pair's whole time.
+        dd = d + timed[i + 1][1] if shape == "left" else (
+            d + timed[i - 1][1] if shape == "right" else d)
         seg = {"id": i, "kind": m.kind, "src": m.src.rel, "dur": round(d, 4),
                "chapter": m.segment, "tag": m.tag,
                "role": "open" if m is opener else ("close" if m is closer else "body"),
                "look": ch.look, "fx": {"in": "cut", "out": "cut"}}
         if m.kind == "clip":
-            start = clip_start(m, d, sp)
-            frame = frame_at(m.src, start + d * sp / 2) if frame_at else None
-            window, last_seen = span_window(m.src, start, start + d * sp, frame)
+            start = clip_start(m, dd, sp)
+            frame = frame_at(m.src, start + dd * sp / 2) if frame_at else None
+            window, last_seen = span_window(m.src, start, start + dd * sp, frame, aspect)
             # The subject walks out: end the shot as they leave, not after.
-            if not music and last_seen is not None and m.faces and \
+            if shape == "full" and not music and last_seen is not None and m.faces and \
                     last_seen + 0.25 < start + d * sp and last_seen + 0.25 - start >= 1.5 * sp:
                 d = _frames((last_seen + 0.25 - start) / sp) / float(FPS)
                 seg["dur"] = round(d, 4)
+            if shape != "full":
+                d_play = dd
+            else:
+                d_play = d
             seg["in"] = round(start, 3)
-            seg["out"] = round(start + d * sp, 3)
+            seg["out"] = round(min(m.src.duration - 0.05, start + d_play * sp), 3)
             seg["speed"] = sp
             seg["window"] = window
-            path = reframe.track(m.src, start, start + d * sp, window) \
+            path = reframe.track(m.src, start, start + d_play * sp, window) \
                 if window[2] < 0.98 and m.faces else None
             if path and sp == 1.0:
                 seg["track"] = path
@@ -803,7 +851,7 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
                 way = 1 if drift.random() < 0.5 else -1
                 x0 = window[0]
                 x1 = min(max(x0 + way * 0.04, 0.0), 1.0 - window[2])
-                n = _frames(d)
+                n = _frames(d_play)
                 seg["track"] = [round(x0 + (x1 - x0) * k / max(1, n - 1), 5) for k in range(n)]
             if m.shake is not None and 0.01 < m.shake <= 0.02:
                 seg["stabilise"] = True
@@ -824,10 +872,11 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
         else:
             rgb, boxes = photo_rgb(m.src) if photo_rgb else (None, [])
             if rgb is not None:
-                if d >= 1.5:
-                    a, b = photo_windows(rgb, boxes, kb[m.segment], drift.uniform(0.04, 0.08))
+                if dd >= 1.5:
+                    a, b = photo_windows(rgb, boxes, kb[m.segment], drift.uniform(0.04, 0.08),
+                                         aspect)
                 else:
-                    a = b = photo_windows(rgb, boxes, True, 0.0)[0]   # too short to move
+                    a = b = photo_windows(rgb, boxes, True, 0.0, aspect)[0]   # too short to move
                 seg["kenburns"] = {"start": a, "end": b}
             seg["sound"] = "bed"
         # Where the day changes, or after a long gap: a dip, and a caption.
@@ -852,24 +901,30 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
         if style["transitions"] == "soft" and m.kind == "photo" and segments and \
                 segments[-1]["kind"] == "photo" and seg["fx"]["in"] == "cut":
             seg["fx"]["in"] = "dissolve"
+        if shape == "pillar":
+            seg["layout"] = "pillar"
         segments.append(seg)
         segments_taken.append(m.taken or (segments_taken[-1] if segments_taken else None))
         t += d
+
+    segments = _pairs(segments, layout)
 
     # The next shot's own sound comes in early (a J-cut) when it has
     # something to hear - a voice, a cheer - and both shots carry sound.
     if not music:
         for a, b in zip(segments, segments[1:]):
-            if b["kind"] == "clip" and a.get("sound") == "own" and b.get("sound") == "own" \
+            if b["kind"] in ("clip", "pair") and a.get("sound") == "own" \
+                    and b.get("sound") == "own" \
                     and (b.get("speech", 0) > 0.5 or b.get("onset")):
                 b["jcut"] = 0.4
         # Under a photo, the previous clip's sound carries on quietly (an L-cut).
         last_clip = None
         for s_ in segments:
-            if s_["kind"] == "clip" and s_.get("sound") == "own":
+            if s_.get("sound") == "own" and "out" in s_:
                 last_clip = s_
-            elif s_["kind"] == "photo" and last_clip is not None:
-                s_["ambience"] = {"src": last_clip["src"], "from": last_clip["out"]}
+            elif s_.get("sound") == "bed" and last_clip is not None:
+                s_["ambience"] = {"src": last_clip.get("audio_src", last_clip["src"]),
+                                  "from": last_clip["out"]}
                 last_clip = dict(last_clip, out=last_clip["out"] + s_["dur"])
 
     total = round(sum(s["dur"] for s in segments), 3)
@@ -887,7 +942,7 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
         segments[-1]["fx"]["out"] = "fade"
     recipe = {
         "version": 2, "event": event, "seed": seed,
-        "output": {"fps": FPS, "duration": total},
+        "output": {"fps": FPS, "duration": total, "aspect": style["aspect"]},
         "style": style,
         "overlays": overlays,
         "audio": ({"mode": "music", "music": music["rel"],
@@ -898,8 +953,53 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
     return recipe
 
 
+def _pairs(segments, layout):
+    """Merge each left/right pair of shots into one side-by-side shot.
+
+    The pair plays for both shots' time; each half carries the pair's
+    transitions. Its sound is the first half with sound of its own, or the
+    ambience of what came before when both halves are photos.
+    """
+    out, i = [], 0
+    while i < len(segments):
+        a = segments[i]
+        if layout[i] == "left" and i + 1 < len(segments):
+            b = segments[i + 1]
+            dur = round(a["dur"] + b["dur"], 4)
+            fx = {"in": "cut" if a["fx"]["in"] == "dissolve" else a["fx"]["in"],
+                  "out": b["fx"]["out"]}
+            halves = []
+            for h in (a, b):
+                h = dict(h, dur=dur, fx=dict(fx))
+                for k in ("jcut", "ambience"):
+                    h.pop(k, None)
+                halves.append(h)
+            pair = {"id": a["id"], "kind": "pair", "src": a["src"], "dur": dur,
+                    "chapter": a["chapter"], "tag": a.get("tag", ""),
+                    "role": a["role"] if a["role"] != "body" else b["role"],
+                    "look": a["look"], "fx": fx, "halves": halves}
+            voiced = next((h for h in halves if h["kind"] == "clip"
+                           and h.get("sound") in ("own", "up")), None)
+            if voiced:
+                pair.update(sound=voiced["sound"], audio_src=voiced["src"],
+                            speech=voiced.get("speech", 0), onset=voiced.get("onset", 0))
+                pair["in"], pair["out"] = voiced["in"], voiced["out"]
+            else:
+                pair["sound"] = "bed"
+            out.append(pair)
+            i += 2
+            continue
+        if a.get("layout") == "pillar" and a["fx"]["in"] == "dissolve":
+            a["fx"]["in"] = "cut"
+        out.append(a)
+        i += 1
+    return out
+
+
 def _face_y(m, seg):
     """Vertical centre (0-1, in the output frame) of the opener's faces."""
+    if seg["kind"] == "pair" or seg.get("layout") == "pillar":
+        return None
     if m.kind == "clip":
         tl = m.src.timeline
         i = min(range(len(tl["t"])), key=lambda k: abs(tl["t"][k] - seg["in"]))
@@ -921,8 +1021,11 @@ def _face_y(m, seg):
 
 def summary(recipe):
     s = recipe["style"]
-    kinds = [g["kind"] for g in recipe["segments"]]
-    return "%.0fs · %d shots (%d clips, %d photos) · %s · %s emphasis · %s colour%s" % (
+    kinds = []
+    for g in recipe["segments"]:
+        kinds += [h["kind"] for h in g["halves"]] if g["kind"] == "pair" else [g["kind"]]
+    return "%s%.0fs · %d shots (%d clips, %d photos) · %s · %s emphasis · %s colour%s" % (
+        "16:9 · " if recipe["output"].get("aspect") == "wide" else "",
         recipe["output"]["duration"], len(kinds), kinds.count("clip"),
         kinds.count("photo"), s["pacing"], s.get("emphasis", "balanced"),
         s.get("family", s.get("look")),

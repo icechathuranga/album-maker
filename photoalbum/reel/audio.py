@@ -117,8 +117,8 @@ def mix(recipe, sources, music_path, out_wav):
 
     for s, t0 in zip(segs, starts):
         snd = s.get("sound")
-        if s["kind"] == "clip" and snd in ("own", "up"):
-            clip = sources[s["src"]]
+        if s["kind"] in ("clip", "pair") and snd in ("own", "up") and "in" in s:
+            clip = sources[s.get("audio_src", s["src"])]
             if not clip.has_audio:
                 continue
             lead = float(s.get("jcut", 0.0))
@@ -127,7 +127,7 @@ def mix(recipe, sources, music_path, out_wav):
             a = _read(clip.path, a0, (s["out"] - a0) + CROSSFADE)
             a = _fade(_level(a), max(lead, 0.12), CROSSFADE)
             _place(nat, a, t0 - lead)
-        elif s["kind"] == "photo" and s.get("ambience"):
+        elif s.get("ambience"):
             amb = s["ambience"]
             clip = sources.get(amb["src"])
             if clip is None or not clip.has_audio:

@@ -87,6 +87,8 @@ def parse_words(words):
             opts["order"] = low
         elif low in enhance.LOOKS or low == "auto":
             opts["look"] = low
+        elif low in ("wide", "16:9", "landscape"):
+            opts["wide"] = True
         elif low in ("colour", "color", "nomono", "no-mono"):
             opts["no_mono"] = True
         elif low in ("nomusic", "no-music"):
@@ -100,7 +102,10 @@ def parse_words(words):
 
 def _spans(recipe):
     out = {}
+    flat = []
     for g in recipe.get("segments", []):
+        flat += g["halves"] if g["kind"] == "pair" else [g]
+    for g in flat:
         out.setdefault(g["src"], []).append(
             (g.get("in", 0.0), g.get("out", 0.0)) if g["kind"] == "clip" else (0.0, 0.0))
     return out
@@ -315,7 +320,8 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                 if all(_differs(recipe, m[1]) for m in made) or not made:
                     break
                 s = (s * 31 + 17) & 0x7fffffff
-        name = "%s-s%d%s" % (event, s, "-preview" if profile == "preview" else "")
+        name = "%s-s%d%s%s" % (event, s, "-wide" if recipe["output"].get("aspect") == "wide"
+                               else "", "-preview" if profile == "preview" else "")
         base = os.path.join(out_dir, name)
         with open(base + ".recipe.json", "w") as fh:
             json.dump(recipe, fh, indent=1)
@@ -386,6 +392,8 @@ def main(argv=None):
     ap.add_argument("--music-until", help="stop the music here (e.g. 2:56); if the "
                     "video is longer, its last section before this point repeats")
     ap.add_argument("--no-music", action="store_true", help="keep the clips' own sound")
+    ap.add_argument("--wide", action="store_true",
+                    help="16:9 (1920x1080) for YouTube, instead of vertical 9:16")
     ap.add_argument("--no-mono", action="store_true",
                     help="all in colour: never turn a chapter black and white")
     ap.add_argument("--look", choices=sorted(list(enhance.LOOKS) + ["auto"]))
@@ -448,6 +456,8 @@ def main(argv=None):
         opts["no_music"] = True
     if args.no_mono:
         opts["no_mono"] = True
+    if args.wide:
+        opts["wide"] = True
     if args.look:
         opts["look"] = args.look
 

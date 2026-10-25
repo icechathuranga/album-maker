@@ -261,6 +261,7 @@ the frame: cut on whole beats, the last shot trimmed to fit.
 ./make-reel "Trip" places soft            # steer it in words
 ./make-reel "Trip" --duration 4m --music-until 2:56
                                           # song to 2:56, then its last section repeats to 4:00
+./make-reel "Trip" wide                   # 16:9 (1920x1080) for YouTube instead of 9:16
 ./make-reel --list                        # videos, photos and music per folder
 ```
 
@@ -327,6 +328,17 @@ The rules follow how a professional editor cuts a travel or event film:
   balance matched within each chapter.
 - **Transitions:** hard cuts. A dip only where the day changes, a dissolve
   only between two photos (`soft`), nothing at all with `clean`.
+
+### Wide (16:9) videos
+
+`wide` (or `--wide`, `16:9`) makes a 1920x1080 video for YouTube or a TV,
+saved as `<Event>-s<seed>-wide.mp4` so it never replaces the vertical one.
+Landscape footage and photos fill the frame. Phone footage shot upright is
+handled the way an editor would rather than cropped to a sliver: two
+portrait shots in a row from the same part of the day play side by side
+(a landscape shot between them may trade places with the second, a minute
+or so at most, to make the pair), and a portrait shot with no partner
+stands centred on a dark frame. Titles are sized from the frame height.
 
 ### Cover images
 

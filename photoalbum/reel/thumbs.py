@@ -94,6 +94,10 @@ def _flat_share(path):
 def make(recipe, sources, out_base, title, subtitle, look="natural", cache_dir=None):
     """Write both images next to the video. Returns their paths."""
     used = []
+    flat = []
+    for seg in recipe["segments"]:
+        flat += seg["halves"] if seg["kind"] == "pair" else [seg]
+    recipe = dict(recipe, segments=flat)
     for seg in recipe["segments"]:
         src = sources.get(seg["src"])
         if seg["kind"] == "photo" and src is not None and src not in used:

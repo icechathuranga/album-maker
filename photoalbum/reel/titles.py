@@ -50,18 +50,22 @@ def render(title, subtitle, W, H, style="overlay", y=None):
     sub = (subtitle or "").upper()
     big = style == "overlay"
     centre_y = H * (y if y is not None else (0.40 if big else 0.15))
-    size0 = int(W * (0.095 if big else 0.065))
+    # Sizes follow the frame's short side, so a 16:9 title is no larger than
+    # a 9:16 one; on a wide frame the title spans less of the width.
+    base = min(W, H)
+    limit = 0.84 if W <= H else 0.62
+    size0 = int(base * (0.095 if big else 0.065))
     words = title.split()
     lines = [title]
-    font, size = _fit(title, W, size0, 0.84, int(W * 0.045))
+    font, size = _fit(title, W, size0, limit, int(base * 0.045))
     # Two lines at a size a phone can read beat one line of small type.
-    if len(words) > 1 and size < int(W * 0.085):
+    if len(words) > 1 and size < int(base * 0.085):
         cut = min(range(1, len(words)), key=lambda i: abs(
             len(" ".join(words[:i])) - len(" ".join(words[i:]))))
         lines = [" ".join(words[:cut]), " ".join(words[cut:])]
-        font, size = _fit(max(lines, key=len), W, size0, 0.84, int(W * 0.04))
+        font, size = _fit(max(lines, key=len), W, size0, limit, int(base * 0.04))
 
-    sub_font = _font(fonts.LIGHT, max(int(W * 0.03), int(size * 0.28)))
+    sub_font = _font(fonts.LIGHT, max(int(base * 0.03), int(size * 0.28)))
     sub_size = sub_font.size
     lead = size * 1.15
     block = lead * len(lines) + (sub_size * 2.4 if sub else 0)
@@ -99,7 +103,7 @@ def render(title, subtitle, W, H, style="overlay", y=None):
 def caption(text, W, H, y=0.11):
     """A small spaced-capitals line high in the frame: "DAY 2 · KATARAGAMA"."""
     text = (text or "").upper()
-    size = max(14, int(W * 0.038))
+    size = max(14, int(min(W, H) * 0.038))
     font = _font(fonts.LIGHT, size)
     track = size * TRACK_SUB
     while size > 12 and _spaced_width(font, text, track) > W * 0.86:
