@@ -309,12 +309,16 @@ The rules follow how a professional editor cuts a travel or event film:
 - **Music.** Tempo and beats are found offline; every cut lands on a beat,
   the film is a whole number of 16-beat phrases, and the music fades over
   its last two seconds on a phrase boundary.
-- **Fitting a song to the video.** `--music-until 2:56` stops the song at
-  the nearest bar line before 2:56. If the video is longer (`--duration
-  4m`), the song's last 32 beats before that point repeat to fill it, each
-  join a one-beat equal-power crossfade on the beat, so the phrase comes
-  round again rather than cutting; the cuts follow the beat across the
-  joins, and the music fades out over the last two seconds.
+- **Fitting a song to the video.** When the video is longer than the
+  song, the song is extended the way a music editor would: it plays from
+  its start, jumps back from a bar line in its second half to an earlier
+  bar in its middle, and plays on to its own ending - so the extra time is
+  one long natural stretch, not a short loop, and the film ends on the
+  song's real ending. The two bars are chosen where the music sounds most
+  alike either side (band spectrum and level, compared over eight beats),
+  joined with a one-beat crossfade on the downbeat; a much longer video
+  repeats the middle stretch. `--music-until 2:56` ends the song at that
+  bar instead of its natural end.
 - **Sound mixed like an editor.** Each clip is levelled on its own and the
   low rumble removed; clips cross-fade over 0.3 s; the next shot's voice or
   cheer can start early (a J-cut); under a photo the previous clip's sound

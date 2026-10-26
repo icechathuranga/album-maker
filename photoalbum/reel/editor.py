@@ -788,12 +788,23 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
         # A landscape shot between two portrait ones from the same part of
         # the day trades places with the second, so the portraits can pair.
         # Every length is whole beats, so the cuts stay on the beat.
-        for i in range(len(timed) - 2):
-            a_, b_, c_ = timed[i][0], timed[i + 1][0], timed[i + 2][0]
-            if upright(a_) and not upright(b_) and upright(c_) \
-                    and a_.segment == b_.segment == c_.segment and day(a_) == day(c_) \
-                    and b_ is not opener and c_ is not closer:
-                timed[i + 1], timed[i + 2] = timed[i + 2], timed[i + 1]
+        # Look up to three shots ahead for a partner, within the same part of
+        # the day, and bring it next to the first.
+        i = 0
+        while i < len(timed) - 1:
+            a_ = timed[i][0]
+            if upright(a_) and not upright(timed[i + 1][0]):
+                for k in range(i + 2, min(i + 4, len(timed))):
+                    c_ = timed[k][0]
+                    if c_ is closer or timed[k - 1][0] is opener:
+                        break
+                    if c_.segment != a_.segment or day(c_) != day(a_):
+                        break
+                    if upright(c_):
+                        timed.insert(i + 1, timed.pop(k))
+                        break
+            i += 2 if (i + 1 < len(timed) and upright(timed[i][0])
+                       and upright(timed[i + 1][0])) else 1
         i = 0
         while i < len(timed):
             m = timed[i][0]

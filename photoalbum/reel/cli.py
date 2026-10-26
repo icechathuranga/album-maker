@@ -300,27 +300,27 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                     song_path = path
                     a = _music_analysis(path, cache)
                     until = opts.get("music_until")
-                    if a and not until and opts.get("duration") and \
-                            opts["duration"] > a["duration"] - 1.0:
-                        # Longer than the song: end the song where its last
-                        # full-energy section ends (before any fade-out), and
-                        # repeat the bars before it to fill the length.
-                        en, bt = a.get("energy", []), a["beats"]
-                        strong = [i for i, e in enumerate(en) if e >= 0.5 * max(en)] if en else []
-                        until = bt[strong[-1]] if strong else a["duration"] - 4.0
-                    if a and until:
-                        opts = dict(opts, music_until=until)
-                        # Stop the song at the time asked for and, if the
-                        # video runs longer, repeat its last section to fill.
+                    longer = bool(a and opts.get("duration")
+                                  and opts["duration"] > (until or a["duration"]) - 1.0)
+                    if a and (until or longer):
+                        # Cut the song where asked (or keep its natural end)
+                        # and, if the video is longer, jump back into its
+                        # middle at the most seamless bar and play on to the end.
+                        opts = dict(opts, music_until=until or a["duration"])
                         path, fit = musicfit.extend(
-                            path, a, opts["music_until"],
-                            opts.get("duration") or opts["music_until"], cache)
+                            path, a, until, opts.get("duration") or until, cache)
                         a = _music_analysis(path, cache)
                         if verbose and _attempt == 0:
-                            print("  music: cut at %s on the beat, then a %d-beat section "
-                                  "from %s repeats (one-beat crossfades)" % (
-                                      _mmss(fit["cut"]), fit["loop_beats"],
-                                      _mmss(fit["loop_start"])))
+                            if fit:
+                                print("  music: plays to %s, jumps back to %s and plays on to "
+                                      "%s%s (one-beat crossfade, match %.2f)" % (
+                                          _mmss(fit["cut"]), _mmss(fit["jump_to"]),
+                                          _mmss(fit["end"]),
+                                          "" if fit["repeats"] == 1 else
+                                          ", middle repeated %d times" % fit["repeats"],
+                                          fit["score"]))
+                            else:
+                                print("  music: cut at %s" % _mmss(until))
                     if a:
                         track = {"path": path, "rel": os.path.relpath(path, root), "analysis": a,
                                  "song": os.path.relpath(song_path, root)}
