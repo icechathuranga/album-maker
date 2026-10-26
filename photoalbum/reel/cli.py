@@ -299,7 +299,17 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                         path = prev
                     song_path = path
                     a = _music_analysis(path, cache)
-                    if a and opts.get("music_until"):
+                    until = opts.get("music_until")
+                    if a and not until and opts.get("duration") and \
+                            opts["duration"] > a["duration"] - 1.0:
+                        # Longer than the song: end the song where its last
+                        # full-energy section ends (before any fade-out), and
+                        # repeat the bars before it to fill the length.
+                        en, bt = a.get("energy", []), a["beats"]
+                        strong = [i for i, e in enumerate(en) if e >= 0.5 * max(en)] if en else []
+                        until = bt[strong[-1]] if strong else a["duration"] - 4.0
+                    if a and until:
+                        opts = dict(opts, music_until=until)
                         # Stop the song at the time asked for and, if the
                         # video runs longer, repeat its last section to fill.
                         path, fit = musicfit.extend(

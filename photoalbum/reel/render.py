@@ -332,23 +332,32 @@ def render(recipe, event_dir, sources, out_path, work_dir, profile="preview",
             img.save(png)
         pngs.append((png, ov))
 
-    cmd = [ffm.FFMPEG, "-v", "error", "-y"]
-    for p in parts:
-        cmd += ["-i", p]
-    k = len(parts)
-    for png, _ov in pngs:
-        cmd += ["-loop", "1", "-t", "%.3f" % total, "-i", png]
+    # Join the shots end to end first, without re-encoding: one file is read
+    # at a time, so memory stays small however many shots there are. (Opening
+    # every shot in one filter graph needed ~10 GB for a 136-shot reel.)
+    joined = os.path.join(work_dir, "joined_%s.mp4" % _key(parts))
+    lst = joined + ".txt"
+    with open(lst, "w") as fh:
+        for p in parts:
+            fh.write("file '%s'\n" % p.replace("'", "'\\''"))
+    ffm.run([ffm.FFMPEG, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst,
+             "-c", "copy", joined])
+
+    cmd = [ffm.FFMPEG, "-v", "error", "-y", "-i", joined]
+    for png, ov in pngs:
+        # Each text image only lasts as long as it is on screen.
+        cmd += ["-loop", "1", "-t", "%.3f" % (max(ov["t0"] + 0.8, ov["t1"]) + 0.1), "-i", png]
     cmd += ["-i", wav]
-    g = "".join("[%d:v]" % i for i in range(k)) + "concat=n=%d:v=1:a=0[v0];" % k
-    last = "v0"
+    g = ""
+    last = "0:v"
     for j, (png, ov) in enumerate(pngs):
         t0, t1 = ov["t0"], max(ov["t0"] + 0.8, ov["t1"])
         g += ("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,"
-              "fade=t=out:st=%.2f:d=0.4:alpha=1[t%d];" % (k + j, t0, t1 - 0.4, j))
-        g += "[%s][t%d]overlay=0:0:enable='between(t,%.2f,%.2f)'[v%d];" % (
+              "fade=t=out:st=%.2f:d=0.4:alpha=1[t%d];" % (1 + j, t0, t1 - 0.4, j))
+        g += "[%s][t%d]overlay=0:0:eof_action=pass:enable='between(t,%.2f,%.2f)'[v%d];" % (
             last, j, t0, t1, j + 1)
         last = "v%d" % (j + 1)
-    g += "[%s]format=yuv420p[v];[%d:a]%s[a]" % (last, k + len(pngs), loud)
+    g += "[%s]format=yuv420p[v];[%d:a]%s[a]" % (last, 1 + len(pngs), loud)
     cmd += ["-filter_complex", g, "-map", "[v]", "-map", "[a]",
             "-t", "%.3f" % total, "-r", str(FPS),
             "-c:v", "libx264", "-preset", prof["preset"], "-crf", str(prof["crf"]),

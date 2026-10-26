@@ -888,8 +888,15 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
                 segments[-1]["fx"]["out"] = "dip"
                 day_items = [x.src for x, _, _ in timed if x.taken and x.taken.date() == date]
                 town = _town(day_items)
-                text = "DAY %d  ·  %s%s" % (day, (town.upper() + "  ·  ") if town else "",
-                                            m.taken.strftime("%d %B").upper())
+                years = {x.taken.year for x, _, _ in timed if x.taken}
+                if len(years) > 1:
+                    # Footage from more than one year: name the date, since
+                    # "day 4" of two separate trips means nothing.
+                    text = "%s%s" % ((town.upper() + "  ·  ") if town else "",
+                                     m.taken.strftime("%d %B %Y").upper())
+                else:
+                    text = "DAY %d  ·  %s%s" % (day, (town.upper() + "  ·  ") if town else "",
+                                                m.taken.strftime("%d %B").upper())
                 overlays.append({"kind": "caption", "text": text,
                                  "t0": round(t + 0.4, 2), "t1": round(t + 2.6, 2)})
             prev_date = date

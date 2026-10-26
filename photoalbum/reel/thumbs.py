@@ -42,12 +42,15 @@ def _video_frames(recipe, sources, cache_dir, limit=30):
             continue
         t = (seg["in"] + seg["out"]) / 2.0
         key = hashlib.sha1(("%s|%d|%.2f" % (clip.rel, int(clip.mtime), t)).encode()).hexdigest()[:16]
-        wanted.append((clip, t, os.path.join(folder, key + ".jpg")))
-    wanted = wanted[:limit]
+        wanted.append((clip, t, os.path.join(folder, key + ".jpg"), seg.get("tag", "")))
+    # Evenly across the whole video, not just its first shots.
+    if len(wanted) > limit:
+        step = len(wanted) / float(limit)
+        wanted = [wanted[int(i * step)] for i in range(limit)]
 
     def grab(item):
         """Extract one frame (ffmpeg only - safe to run in parallel)."""
-        clip, t, path = item
+        clip, t, path, _tag = item
         if not os.path.exists(path):
             frame = next(ffm.decode_frames(clip.path, t, 0.2, 30,
                                            ffm.fit_size(clip.width, clip.height, 1920),
@@ -61,12 +64,13 @@ def _video_frames(recipe, sources, cache_dir, limit=30):
         got = [x for x in pool.map(grab, wanted) if x is not None]
     # Scored one at a time: the face detector is shared and not thread-safe.
     frames = []
-    for clip, t, path in got:
+    for clip, t, path, tag in got:
         p = ingest.Photo(path, folder)
         ingest.probe(p)
         p.taken = clip.taken
         quality.analyse(p, print_sharpness="off")
         p.dhash = dedupe.dhash(p)
+        p.hero = tag in ("action", "sound", "establish")   # the clip's highlights
         frames.append(p)
     # Only frames as sharp as a photo would need to be, and with detail all
     # over: a frame with a large featureless patch (a shirt filling one side,
@@ -106,16 +110,21 @@ def make(recipe, sources, out_base, title, subtitle, look="natural", cache_dir=N
     # The highlights of the video lead: a frame from it counts as one of the
     # best shots (the cover picker favours those). Close-ups of people are
     # left out - in a narrow strip a face filling the frame becomes a torso.
-    for f in frames:
-        f.hero = True
     used += frames
     # A thumbnail sells the place and the action - the jeep in the mud, the
     # river, the shrine - so shots with nobody in them are used when there
     # are enough; otherwise at least no close-ups (a face filling the frame
     # becomes a torso in a narrow strip).
+    # With photos to choose from, scenes without people make the best strips;
+    # an all-video reel needs its action shots (a jeep in the mud has people
+    # round it), so there only close-up faces are left out.
+    has_photos = any(not getattr(p, "path", "").startswith(cache_dir or "\0") for p in used)
     scenes = [p for p in used if not (p.scores or {}).get("faces", 0)]
     wide = [p for p in used if (p.scores or {}).get("face_largest", 0.0) <= 0.05]
-    used = scenes if len(scenes) >= 8 else (wide if len(wide) >= 8 else used)
+    if has_photos and len(scenes) >= 8:
+        used = scenes
+    elif len(wide) >= 8:
+        used = wide
     # The strips read left to right in the order things happened.
     used.sort(key=lambda p: (p.taken is None, p.taken or 0, p.name))
     # The opener (when it is a photo) leads; the rest in story order.
