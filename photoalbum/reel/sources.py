@@ -18,7 +18,7 @@ def _photo_cache(cache_dir, p):
     return os.path.join(cache_dir, hashlib.sha1(key.encode()).hexdigest() + ".json")
 
 
-REEL_MIN_DETAIL = 120.0   # tile Laplacian variance (80th pct) at analysis size
+REEL_MIN_DETAIL = curate.MIN_DETAIL   # the album's motion-blur bar
 
 
 def photos(event_dir, album_json, cache_dir, skip=(), keep=()):

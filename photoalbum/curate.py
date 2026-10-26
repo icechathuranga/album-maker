@@ -200,7 +200,14 @@ def _too_soft(p, sharpness_floor, face_sharpness_floor):
             return "faces are not sharp enough to print"
     if s.get("sharpness", 1.0) < sharpness_floor:
         return "not sharp enough to print"
+    # Motion blur smears the whole frame, so even its most detailed parts
+    # carry little fine detail; a sharp photo always has some somewhere.
+    if s.get("raw_laplacian_var", 1e9) < MIN_DETAIL:
+        return "blurred (too little fine detail anywhere)"
     return None
+
+
+MIN_DETAIL = 120.0    # 80th-percentile tile Laplacian variance at analysis size
 
 
 def select(photos, target_pages=24, photos_per_page=PHOTOS_PER_PAGE,
