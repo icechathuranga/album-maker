@@ -295,6 +295,13 @@ The rules follow how a professional editor cuts a travel or event film:
   rather than talk), then more of its best moments - three, plus one per
   45 seconds, up to twelve - at least 20 s apart and visually distinct.
   Each chapter fills its time with video first and photos after.
+- **Small events, every good moment.** When there is less than twice the
+  film's length of footage (a get-together filmed in a few dozen short
+  clips), every clip gives a moment every 10 s, shots may run up to 9 s,
+  a quick pan or a lone quarter-second jolt no longer splits a good shot,
+  and every good moment is offered before the film is thinned to length.
+  If the good material still runs out before the song, the film ends on
+  a whole musical phrase rather than stretching weak footage.
 - **Shot choice.** Blurred photos are left out: the album's softness
   rules, plus a check for motion blur (too little fine detail anywhere in
   the frame) and for photos too soft to fill a phone screen. Static talking

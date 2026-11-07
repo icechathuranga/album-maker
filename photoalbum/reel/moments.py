@@ -26,6 +26,11 @@ SHAKE_FULL = 0.02        # jitter (share of width) that counts as full shake
 OWN_TWIN_BITS = 14       # two moments of one clip must differ at least this much
 CLOSE_UP = 0.06          # largest face area above this is a close-up
 WIDE = 0.02              # ...below this (or no face) is a wide shot
+# When the footage is scarce for the film's length (a small get-together
+# filmed in a few dozen short clips), every clip gives what it has: a moment
+# every RICH_GAP seconds, each reaching RICH_REACH either side of its peak.
+RICH_GAP = 10.0
+RICH_REACH = 6.0
 
 
 class Moment:
@@ -99,10 +104,12 @@ def _cap(duration):
     return int(min(12, 3 + duration // 45, 1 + duration // 20))
 
 
-def _candidates(clip, g, bad, t, gap):
+def _candidates(clip, g, bad, t, gap, reach=SPAN_REACH, rich=False):
     """Every local peak worth considering, best first, spaced by `gap`."""
     smooth = np.convolve(np.where(bad, 0.0, g), np.ones(3) / 3.0, mode="same")
-    cuts = set(i for i, c in enumerate(clip.timeline["cut"]) if c)
+    # Scarce footage: a quick pan inside a phone clip (which reads as a cut)
+    # does not end a moment, and it may take in slightly weaker seconds.
+    cuts = set() if rich else set(i for i, c in enumerate(clip.timeline["cut"]) if c)
     n = len(t)
     step = 1.0 / analyse.RATE
     out, taken = [], []
@@ -111,7 +118,7 @@ def _candidates(clip, g, bad, t, gap):
             break
         if bad[i] or any(abs(t[i] - c) < gap for c in taken):
             continue
-        floor = 0.5 * smooth[i]
+        floor = (0.35 if rich else 0.5) * smooth[i]
         lo = hi = i
         while lo - 1 >= 0 and not bad[lo - 1] and smooth[lo - 1] >= floor and lo not in cuts:
             lo -= 1
@@ -120,9 +127,9 @@ def _candidates(clip, g, bad, t, gap):
         # A moment is its own few seconds, not the whole good stretch round
         # it: otherwise several moments of a long steady recording share one
         # span and end up cut from the same footage.
-        while t[lo] < t[i] - SPAN_REACH and lo < i:
+        while t[lo] < t[i] - reach and lo < i:
             lo += 1
-        while t[hi] > t[i] + SPAN_REACH and hi > i:
+        while t[hi] > t[i] + reach and hi > i:
             hi -= 1
         lo_t, hi_t = t[lo], min(clip.duration - 0.1, t[hi] + step)
         if hi_t - lo_t < MIN_SPAN:
@@ -178,29 +185,40 @@ def _make(clip, tl, g, people, motion, loud, i, lo, hi, lo_t, hi_t):
     return m
 
 
-def _apart(a, b, gap):
-    return abs(a.centre - b.centre) >= gap and analyse._hamming(a.hash, b.hash) > OWN_TWIN_BITS
+def _apart(a, b, gap, twin=OWN_TWIN_BITS):
+    return abs(a.centre - b.centre) >= gap and analyse._hamming(a.hash, b.hash) > twin
 
 
-def clip_moments(clip):
+def clip_moments(clip, rich=False):
     tl = clip.timeline
     if not tl or not tl["t"]:
         return []
     g, bad, people, motion, loud = goodness(tl)
     t = np.array(tl["t"])
     gap = PEAK_GAP if clip.duration < 60 else LONG_GAP
-    cands = _candidates(clip, g, bad, t, gap)
+    reach, twin = SPAN_REACH, OWN_TWIN_BITS
+    if rich:
+        gap, reach, twin = RICH_GAP, RICH_REACH, OWN_TWIN_BITS // 2
+        # A lone quarter-second jolt does not split a good shot; the moment's
+        # shake is still measured at full frame rate before it is used.
+        lone = bad.copy()
+        lone[1:] &= ~bad[:-1]
+        lone[:-1] &= ~bad[1:]
+        bad = bad & ~(lone & (t >= SKIP_HEAD))
+    cands = _candidates(clip, g, bad, t, gap, reach, rich)
     if not cands:
         return []
     made = [_make(clip, tl, g, people, motion, loud, *c) for c in cands]
     cap = max(1, _cap(clip.duration))
+    if rich:
+        cap = max(cap, int(min(12, 1 + clip.duration // RICH_GAP)))
 
     # Beginning, middle and end: the first good wide shot, the most action,
     # the loudest moment (a cheer rather than talk) - then the best of the rest.
     picks = []
 
     def add(m, tag):
-        if m is not None and m not in picks and all(_apart(m, p, gap) for p in picks):
+        if m is not None and m not in picks and all(_apart(m, p, gap, twin) for p in picks):
             m.tag = tag
             picks.append(m)
 
@@ -234,10 +252,10 @@ def photo_moment(photo):
     return m
 
 
-def collect(clips, photos):
+def collect(clips, photos, rich=False):
     moments = []
     for c in clips:
-        moments.extend(clip_moments(c))
+        moments.extend(clip_moments(c, rich))
     moments.extend(photo_moment(p) for p in photos)
     return moments
 

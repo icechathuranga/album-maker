@@ -20,6 +20,7 @@ from ..deps import report as deps_report, np
 from . import editor, ffm, moments, render, sheet, sources, beats, thumbs, musicfit
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
+RICH_RATIO = 2.0   # footage under twice the film's length counts as scarce
 WORDS_PACING = set(editor.PACING)
 WORDS_FX = set(editor.TRANSITIONS)
 WORDS_ORDER = set(editor.ORDERS)
@@ -202,7 +203,22 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
         print("  %d clips, %d photos" % (len(clips), len(photos)))
     sources.chapters(clips, photos)
     colour.balance(list(clips) + list(photos))
-    found = moments.collect(clips, photos)
+    music_files = [] if opts.get("no_music") else (
+        [opts["music"]] if opts.get("music") else _music_files(event_dir, root))
+    # Footage scarce for the film's length (a small get-together): every clip
+    # gives all its good moments, and shots may run longer.
+    target = opts.get("duration")
+    if not target and music_files:
+        lens = [(_music_analysis(f, cache) or {}).get("duration", 0.0) for f in music_files]
+        target = min(lens) or None
+    target = target or editor.DEFAULT_DURATION
+    footage = sum(c.duration for c in clips) + 3.0 * len(photos)
+    if footage < RICH_RATIO * target:
+        opts = dict(opts, rich=True)
+        if verbose:
+            print("  only %s of footage for a %s film: using every good moment" % (
+                _mmss(footage), _mmss(target)))
+    found = moments.collect(clips, photos, rich=bool(opts.get("rich")))
     # Hand-shake measured at full frame rate for every clip moment (cached).
     shake_path = os.path.join(cache, "shake.json")
     shake = {}
@@ -220,8 +236,6 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
     by_rel = {c.rel: c for c in clips}
     by_rel.update({p.rel: p for p in photos})
 
-    music_files = [] if opts.get("no_music") else (
-        [opts["music"]] if opts.get("music") else _music_files(event_dir, root))
     title = cover.display_title(album_cli._pretty_title(event))
     subtitle = album_cli._fmt_range(list(clips) + list(photos))
     # Where it was, when the footage knows: the town most of it was shot in.

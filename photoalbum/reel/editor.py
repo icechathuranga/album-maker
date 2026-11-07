@@ -39,6 +39,7 @@ CUT = {"short": {"punchy": 1.1, "steady": 1.6, "cinematic": 2.4},
        "long": {"steady": 2.2, "cinematic": 3.0}}
 PACING = CUT["short"]
 MAX_CLIP_CUT = {"punchy": 2.5, "steady": 5.0, "cinematic": 6.0}
+RICH_CUT = 9.0            # ...when the footage is scarce for the film's length
 BEAT_CHOICES = {"punchy": (1, 2, 2), "steady": (2, 2, 4), "cinematic": (4, 4, 8)}
 ORDERS = ("story",)       # always capture-time order: a reel tells the event
 TRANSITIONS = ("clean", "soft")
@@ -95,6 +96,7 @@ def choose_style(seed, sources, opts):
     # the edit: the same seed gives the same film, only all in colour.
     mono_draw = stream(seed, "mono").random() < 0.35
     style["mono_chapter"] = style["look"] == "auto" and mono_draw and not opts.get("no_mono")
+    style["rich"] = bool(opts.get("rich"))
     style["photo_share"] = {"people": 0.30, "places": 0.15}.get(
         style["emphasis"], round(stream(seed, "photos").uniform(0.15, 0.25), 2))
     return style
@@ -166,7 +168,11 @@ def _tempos(chapters):
         chapters[-1].tempo = max(chapters[-1].tempo, 1.2)
 
 
-def _scenes(chapter):
+def _max_cut(style):
+    return RICH_CUT if style.get("rich") else MAX_CLIP_CUT[style["pacing"]]
+
+
+def _scenes(chapter, rich=False):
     """Clips of one chapter shot within ten minutes of each other are one scene."""
     clips_ = sorted(chapter.clips.values(), key=lambda c: (c.taken is None, c.taken or 0))
     scene_of, scene, last = {}, 0, None
@@ -180,7 +186,8 @@ def _scenes(chapter):
     for c in clips_:
         secs[scene_of[id(c)]] = secs.get(scene_of[id(c)], 0.0) + c.duration
     # A long continuous scene can give many shots: one per minute filmed.
-    caps = {s: int(min(16, 3 + v // 60)) for s, v in secs.items()}
+    # With scarce footage, every moment a scene gives may be used.
+    caps = {s: 16 if rich else int(min(16, 3 + v // 60)) for s, v in secs.items()}
     return scene_of, caps
 
 
@@ -190,10 +197,10 @@ def _select(chapter, style, rnd):
     target = max(1, int(round(chapter.budget / cut)))
     want = int(math.ceil(target * 1.3)) + 1
     jitter = {id(m): rnd.uniform(0.0, 0.2) for m in chapter.moments}
-    scene_of, caps = _scenes(chapter)
+    scene_of, caps = _scenes(chapter, style.get("rich"))
     max_photos = [want if not chapter.has_clips else int(round(style["photo_share"] * want))]
     chosen, per_scene = [], {}
-    max_cut = MAX_CLIP_CUT[style["pacing"]]
+    max_cut = _max_cut(style)
 
     def seconds(m):
         """Roughly how long this moment will hold the screen."""
@@ -205,6 +212,11 @@ def _select(chapter, style, rnd):
     # within the variant's share while there is footage to use, and fill
     # the rest when a chapter's clips run out.
     goal = chapter.budget * 1.2
+    # Scarce footage: every good moment is offered, and the film is thinned
+    # to length afterwards by score.
+    if style.get("rich"):
+        goal = float("inf")
+        max_photos[0] = len(chapter.moments)
 
     def ok(m):
         # Too dark to read on a phone, unless the chapter has nothing else.
@@ -352,7 +364,7 @@ def _lengths(seq, chapters_of, style, seed, opener, closer):
     """Seconds (and playback speed) for every shot, before any music grid."""
     rnd = stream(seed, "lengths")
     cut = style["cut"]
-    max_cut = MAX_CLIP_CUT[style["pacing"]]
+    max_cut = _max_cut(style)
     out, since_breath, slowmo_used = [], 0.0, False
     for m in seq:
         ch = chapters_of[id(m)]
@@ -467,8 +479,9 @@ def _on_beats(items, style, seed, music):
     ks = []
     for m, d, sp in items:
         k = max(1, int(round(d / period)))
-        while k > 1 and m.kind == "clip" and k * period * sp > m.span:
-            k = 2 if k > 2 else 1
+        if m.kind == "clip" and k * period * sp > m.span:
+            # As many whole beats as the moment's footage holds.
+            k = max(1, int(m.span / (period * sp)))
         if m.kind == "clip" and k * period * sp > m.span:
             ks.append(0)            # cannot fill even one beat: skip it
             continue
@@ -481,6 +494,10 @@ def _on_beats(items, style, seed, music):
         # The whole song from its first downbeat: as many beats as the song
         # has, or as many as the footage can fill.
         target = min(total, len(beats) - 1 - down)
+        if target < len(beats) - 1 - down:
+            # Footage runs out before the song does: end on a whole phrase,
+            # so the fade falls where the music resolves.
+            target = max(16, int(round(target / 16.0)) * 16)
     elif style.get("exact"):
         # A length was asked for: as many whole beats as it holds; the last
         # shot is then trimmed to the exact frame.
