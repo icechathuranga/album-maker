@@ -39,6 +39,7 @@ CUT = {"short": {"punchy": 1.1, "steady": 1.6, "cinematic": 2.4},
        "long": {"steady": 2.2, "cinematic": 3.0}}
 PACING = CUT["short"]
 MAX_CLIP_CUT = {"punchy": 2.5, "steady": 5.0, "cinematic": 6.0}
+PHOTO_HOLD = 5.0          # longest a photo is held to fill a length
 RICH_CUT = 9.0            # ...when the footage is scarce for the film's length
 BEAT_CHOICES = {"punchy": (1, 2, 2), "steady": (2, 2, 4), "cinematic": (4, 4, 8)}
 ORDERS = ("story",)       # always capture-time order: a reel tells the event
@@ -505,19 +506,24 @@ def _on_beats(items, style, seed, music):
     else:
         # Whole phrases: the music then ends where it naturally resolves.
         target = max(16, int(round(total / 16.0)) * 16)
-    i = len(keep) - 1
+    # One beat at a time round all the shots, last first, so the change is
+    # spread evenly; until the target is met or no shot can change.
     while total != target and keep:
-        (m, d, sp), k = keep[i]
         step = 1 if total < target else -1
-        if k + step >= 1 and (m.kind != "clip" or (k + step) * period * sp <= m.span):
+        moved = False
+        for i in range(len(keep) - 1, -1, -1):
+            if total == target:
+                break
+            (m, d, sp), k = keep[i]
+            n = (k + step) * period * sp
+            if k + step < 1 or (m.kind == "clip" and n > m.span) or \
+                    (step > 0 and m.kind == "photo" and n > PHOTO_HOLD):
+                continue
             keep[i] = ((m, d, sp), k + step)
             total += step
-        else:
-            i -= 1
-            if i < 0:
-                break
-            continue
-        i = i - 1 if i > 0 else len(keep) - 1
+            moved = True
+        if not moved:
+            break
     energy = music.get("energy", [1.0] * len(beats))
     starts = [b for b in range(down, len(beats), 4)
               if b + total < len(beats) and energy[b] >= 0.5 * max(energy)]

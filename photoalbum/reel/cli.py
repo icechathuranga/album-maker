@@ -20,7 +20,7 @@ from ..deps import report as deps_report, np
 from . import editor, ffm, moments, render, sheet, sources, beats, thumbs, musicfit
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
-RICH_RATIO = 2.0   # footage under twice the film's length counts as scarce
+RICH_RATIO = 1.5   # usable moments under 1.5x the film's length count as scarce
 WORDS_PACING = set(editor.PACING)
 WORDS_FX = set(editor.TRANSITIONS)
 WORDS_ORDER = set(editor.ORDERS)
@@ -212,13 +212,16 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
         lens = [(_music_analysis(f, cache) or {}).get("duration", 0.0) for f in music_files]
         target = min(lens) or None
     target = target or editor.DEFAULT_DURATION
-    footage = sum(c.duration for c in clips) + 3.0 * len(photos)
-    if footage < RICH_RATIO * target:
+    # Judged on what the usual moments would give, not on raw footage: a
+    # dozen minutes of handheld party video may hold only two good ones.
+    found = moments.collect(clips, photos)
+    usable = sum(min(m.span, 6.0) if m.kind == "clip" else 3.0 for m in found)
+    if usable < RICH_RATIO * target:
         opts = dict(opts, rich=True)
+        found = moments.collect(clips, photos, rich=True)
         if verbose:
-            print("  only %s of footage for a %s film: using every good moment" % (
-                _mmss(footage), _mmss(target)))
-    found = moments.collect(clips, photos, rich=bool(opts.get("rich")))
+            print("  only %s of good moments for a %s film: using every good moment" % (
+                _mmss(usable), _mmss(target)))
     # Hand-shake measured at full frame rate for every clip moment (cached).
     shake_path = os.path.join(cache, "shake.json")
     shake = {}
