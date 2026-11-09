@@ -361,7 +361,7 @@ def _tidy(seq, chapter_of, keep):
 
 # --- timing ------------------------------------------------------------------------
 
-def _lengths(seq, chapters_of, style, seed, opener, closer):
+def _lengths(seq, chapters_of, style, seed, opener, closer, protect=()):
     """Seconds (and playback speed) for every shot, before any music grid."""
     rnd = stream(seed, "lengths")
     cut = style["cut"]
@@ -401,6 +401,7 @@ def _lengths(seq, chapters_of, style, seed, opener, closer):
         for x in out:
             counts[id(chapters_of[id(x[0])])] = counts.get(id(chapters_of[id(x[0])]), 0) + 1
         cands = [x for x in out if x[0] is not opener and x[0] is not closer
+                 and id(x[0]) not in protect
                  and counts[id(chapters_of[id(x[0])])] > 1]
         if not cands:
             break
@@ -740,6 +741,14 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
         # A song cut at a chosen point plays from its beginning.
         style["from_start"] = bool(opts.get("music_until"))
 
+    # Photos named in the event's ending.txt close the film, in that order
+    # (the group photo, say); they are kept out of the rest of the edit.
+    ending = opts.get("ending") or []
+    finale = sorted([m for m in moments if m.kind == "photo"
+                     and m.src.name.lower() in ending],
+                    key=lambda m: ending.index(m.src.name.lower()))
+    moments = [m for m in moments if m not in finale]
+
     by_seg = {}
     for m in moments:
         by_seg.setdefault(m.segment, []).append(m)
@@ -771,8 +780,17 @@ def _build(event, title, subtitle, moments, seed, opts, music, frame_at, photo_r
         seq = seq[:seq.index(closer) + 1]
     keep = {id(opener)} | ({id(closer)} if closer else set())
     seq = _tidy(seq, chapter_of, keep)
+    protect = set()
+    if finale:
+        # The film's own last scene leads into them; the last is held longest.
+        for m in finale:
+            chapter_of[id(m)] = real[-1]
+        protect = {id(m) for m in seq if m is closer} | {id(m) for m in finale}
+        keep |= protect
+        seq = seq + finale
+        closer = finale[-1]
 
-    items = _lengths(seq, chapter_of, style, seed, opener, closer)
+    items = _lengths(seq, chapter_of, style, seed, opener, closer, protect)
     items = _no_reuse(items, keep)
     if music:
         timed, music_plan = _on_beats(items, style, seed, music["analysis"])

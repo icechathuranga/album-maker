@@ -9,8 +9,8 @@ from the photos the reel itself uses, so the thumbnail shows what is in the
 video. Text is drawn into the image (a thumbnail has no separate text
 layer) at a size that stays readable when YouTube shows it small.
 """
-from ..deps import Image
-from .. import cover
+from ..deps import Image, ImageFilter, ImageEnhance
+from .. import cover, enhance
 from . import titles
 
 SIZES = {"youtube": (1280, 720), "cover": (1080, 1920)}
@@ -95,8 +95,57 @@ def _flat_share(path):
     return float(np.mean(np.array(v) < 15.0))
 
 
-def make(recipe, sources, out_base, title, subtitle, look="natural", cache_dir=None):
-    """Write both images next to the video. Returns their paths."""
+def _named(photo, W, H, look):
+    """One chosen photo (cover.txt) filling the frame, faces kept whole. When
+    cropping would cut away much of it - a wide group photo on a vertical
+    cover - it is shown whole over a blurred, darkened copy of itself.
+    Returns (image, title centre 0-1 from the top)."""
+    src = cover._Source(int(max(W, H) * 1.5))
+    aspect = photo.width / float(photo.height) if photo.height else W / float(H)
+    boxes = [b for b in (photo.face_boxes or []) if len(b) >= 4]
+    if aspect <= W / float(H) and boxes:
+        # A group photo keeps its full width - nobody at either end is cut -
+        # and loses only sky or floor, framed round the faces.
+        keep = aspect / (W / float(H))              # share of the height kept
+        f0 = min(b[1] for b in boxes)
+        f1 = max(b[1] + b[3] for b in boxes)
+        top = min(max(0.0, (f0 + f1) / 2.0 - keep * 0.42), 1.0 - keep)
+        img = src.get(photo)
+        y0 = int(round(top * img.height))
+        tile = img.crop((0, y0, img.width, y0 + int(round(keep * img.height))))
+        tile = tile.resize((W, H), Image.LANCZOS)
+        tile, _ = enhance.apply(tile, photo, enabled=True, look=look)
+        # The title goes below the faces, over shirts and knees.
+        below = (f1 + 0.06 - top) / keep
+        return tile.convert("RGB"), min(0.86, max(0.70, (below + 1.0) / 2.0))
+    if aspect <= (W / float(H)) * 1.3:
+        return cover._fit(src, photo, W, H, look), 0.84
+    back = cover._fit(src, photo, W, H, look).filter(ImageFilter.GaussianBlur(W // 25))
+    back = ImageEnhance.Brightness(back).enhance(0.45).convert("RGB")
+    fh = int(round(W / aspect))
+    fore = cover._fit(src, photo, W, fh, look)
+    top = int(H * 0.60 - fh / 2.0)
+    back.paste(fore, (0, top))
+    # The title in the blurred space above the photo.
+    return back, max(0.12, (top / float(H)) / 2.0)
+
+
+def make(recipe, sources, out_base, title, subtitle, look="natural", cache_dir=None,
+         cover_photos=()):
+    """Write both images next to the video. Returns their paths. With
+    `cover_photos` (from cover.txt), the best of them is the whole picture."""
+    if cover_photos:
+        hero = max(cover_photos, key=lambda p: p.score or 0.0)
+        out = []
+        for name, (W, H) in SIZES.items():
+            img, y = _named(hero, W, H, look)
+            img = cover._title_band(img, y + 0.04, spread=0.20, strength=0.45, edge=0.0)
+            layer = titles.render(title, subtitle, W, H, y=y)
+            img = Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB")
+            path = "%s.%s.jpg" % (out_base, name)
+            img.save(path, "JPEG", quality=JPEG_QUALITY, optimize=True, progressive=True)
+            out.append(path)
+        return out
     used = []
     flat = []
     for seg in recipe["segments"]:

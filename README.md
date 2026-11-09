@@ -269,7 +269,21 @@ Put phone videos (`.mp4 .mov .m4v .3gp .webm .mkv`) beside the photos in
 `inbox/<Event>/`, and your own music (`.mp3 .m4a .wav .flac`) in `music/`
 next to the tool or in the event folder; nothing is downloaded, and
 `music/` is kept out of git. List clips you do not want in the event's
-`skip.txt`, as for the album. The analysis of the footage is cached in
+`skip.txt`, as for the album. Two more lists in the event folder, one
+filename per line:
+
+```
+inbox/<Event>/ending.txt   → the film ends on these photos, in this order
+inbox/<Event>/cover.txt    → the thumbnails use the best of these, whole
+```
+
+Photos named there are used even when they are near-duplicates of each
+other, as a burst of group photos is. A group photo on the YouTube
+thumbnail keeps its full width (nobody at the ends is cut) with the title
+below the faces; on the vertical cover it is shown whole over a blurred
+copy of itself, the title above.
+
+The analysis of the footage is cached in
 `cache/reels/<Event>/` (safe to delete), so clearing `outbox/` never costs a
 re-analysis. Rendered shots are temporary: they are written to
 `outbox/<Event>/reels/work/` during a run and deleted when it finishes,

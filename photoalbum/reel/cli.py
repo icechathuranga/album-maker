@@ -15,7 +15,7 @@ import re
 import sys
 import time
 
-from .. import cli as album_cli, colour, cover, enhance, faces, ingest, places
+from .. import cli as album_cli, colour, config, cover, enhance, faces, ingest, places
 from ..deps import report as deps_report, np
 from . import editor, ffm, moments, render, sheet, sources, beats, thumbs, musicfit
 
@@ -185,6 +185,14 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
     os.makedirs(out_dir, exist_ok=True)
     run_started = time.time() - 1
     keep, skip = sources.read_lists(event_dir)
+    # ending.txt: photos that close the film, in order; cover.txt (as for the
+    # album): the photo for the thumbnails. Both are used even when they are
+    # near-duplicates of each other, as a burst of group photos is.
+    ending = config.read_list_ordered(event_dir, "ending.txt")
+    cover_names = config.read_list_ordered(event_dir, "cover.txt")
+    keep = set(keep) | set(ending) | set(cover_names)
+    if ending:
+        opts = dict(opts, ending=ending)
 
     prog = album_cli.Progress("watching", 1, verbose)
     dropped = []
@@ -370,7 +378,9 @@ def make(event, inbox, outbox, root, opts, seed, variants=1, recipe_file=None,
                           progress=lambda d, n, nm: (setattr(p, "n", d - 1), p.step(1, nm)))
             p.done()
             render.strip(base + ".mp4", base + ".strip.jpg")
+            chosen_cover = [p for n in cover_names for p in photos if p.name.lower() == n]
             covers = thumbs.make(recipe, by_rel, base, title, subtitle,
+                                 cover_photos=chosen_cover,
                                  look=recipe["style"].get("look", "natural")
                                  if recipe["style"].get("look") != "auto" else "natural",
                                  cache_dir=cache)
